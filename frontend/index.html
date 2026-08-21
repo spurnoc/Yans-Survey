@@ -404,10 +404,10 @@ function showInput(choices) {
 }
 
 function showThinking() {
-  // Don't clear the input area — keep it visible but disabled
+  // Replace input area with a disabled-looking placeholder
+  // so the chat bar is empty but visible while AI is thinking
   const area = document.getElementById('input-area');
-  const inputs = area.querySelectorAll('textarea, button, .choice-btn');
-  inputs.forEach(el => el.disabled = true);
+  area.innerHTML = '<div class="text-wrap"><div class="text-input" style="opacity:0.4;cursor:default">Thinking...</div><button class="send-btn" disabled>→</button></div>';
 }
 
 function showComplete() {
@@ -540,6 +540,9 @@ function submitTextAnswer() {
   if (!ta) return;
   const answer = ta.value.trim();
   if (!answer) return;
+  // Clear the input immediately so it doesn't linger
+  ta.value = '';
+  ta.style.height = 'auto';
   submitAnswer(answer);
 }
 
