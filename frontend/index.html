@@ -453,6 +453,34 @@ async function submitAnswer(answer) {
   chat.appendChild(aiWrap);
   chat.scrollTop = chat.scrollHeight;
 
+  // Typewriter queue — even if tokens arrive in a burst, we render them
+  // at a readable pace so it always looks like the AI is thinking out loud
+  let displayedText = '';
+  let queuedText = '';
+  let typing = false;
+
+  function pumpQueue() {
+    if (typing) return;
+    if (queuedText.length === 0) return;
+    typing = true;
+    // Render 2-3 chars per tick for a natural typing speed
+    const chunk = queuedText.splice(0, 2 + Math.floor(Math.random() * 2));
+    displayedText += chunk;
+    const cleanText = displayedText.replace(/\n*CHOICES:.*$/is, '').trim();
+    aiBubble.innerHTML = escapeHtml(cleanText) + '<span class="stream-cursor"></span>';
+    chat.scrollTop = chat.scrollHeight;
+    // Variable delay: pause longer after punctuation for natural rhythm
+    const lastChar = chunk[chunk.length - 1];
+    let delay = 18;
+    if (lastChar === '.' || lastChar === '!' || lastChar === '?') delay = 140;
+    else if (lastChar === ',' || lastChar === ';' || lastChar === '\n') delay = 60;
+    else if (lastChar === ' ') delay = 12;
+    setTimeout(() => {
+      typing = false;
+      pumpQueue();
+    }, delay);
+  }
+
   try {
     const resp = await fetch(API + '/chat', {
       method: 'POST',
@@ -467,7 +495,7 @@ async function submitAnswer(answer) {
       return;
     }
 
-    // Replace typing dots with streaming cursor
+    // Switch from dots to empty cursor (will fill via typewriter)
     aiBubble.innerHTML = '<span class="stream-cursor"></span>';
 
     const reader = resp.body.getReader();
@@ -492,10 +520,9 @@ async function submitAnswer(answer) {
           const data = JSON.parse(dataStr);
           if (data.content) {
             fullText += data.content;
-            // Strip CHOICES: marker from visible text while streaming
-            const cleanText = fullText.replace(/\n*CHOICES:.*$/is, '').trim();
-            aiBubble.innerHTML = escapeHtml(cleanText) + '<span class="stream-cursor"></span>';
-            chat.scrollTop = chat.scrollHeight;
+            // Queue chars for the typewriter instead of dumping them
+            queuedText.push(...data.content);
+            pumpQueue();
           }
           if (data.state) {
             qIndex = data.state.q_index;
@@ -503,7 +530,6 @@ async function submitAnswer(answer) {
             updateHeader();
           }
           if (data.choices && data.choices.length > 0) {
-            // AI generated dynamic choices for this question — render them as buttons
             pendingChoices = data.choices;
           }
           if (data.done) {
@@ -511,6 +537,11 @@ async function submitAnswer(answer) {
           }
         } catch {}
       }
+    }
+
+    // Wait for the typewriter to finish before showing input
+    while (displayedText.length < fullText.replace(/\n*CHOICES:.*$/is, '').trim().length) {
+      await new Promise(r => setTimeout(r, 50));
     }
 
     // Final display — strip CHOICES marker
@@ -529,7 +560,6 @@ async function submitAnswer(answer) {
 
   } catch (e) {
     aiBubble.textContent = 'Connection error. Try again.';
-    chat.appendChild(aiWrap);
   }
 
   isStreaming = false;
