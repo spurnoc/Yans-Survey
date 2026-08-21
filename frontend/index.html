@@ -138,13 +138,10 @@ textarea{resize:none}
 .typing-wrap{align-self:flex-start;animation:fadeIn .2s}
 .typing{
   display:flex;align-items:center;gap:5px;
-  padding:15px 18px;
-  background:var(--cream-light);
-  border:1px solid var(--warm-border);
-  border-radius:var(--radius-lg) var(--radius-lg) var(--radius-lg) 4px;
+  padding:2px 0;
 }
 .typing span{
-  width:6px;height:6px;border-radius:50%;
+  width:7px;height:7px;border-radius:50%;
   background:var(--warm-muted);
   animation:pulse 1.4s infinite;
 }
@@ -407,8 +404,10 @@ function showInput(choices) {
 }
 
 function showThinking() {
-  document.getElementById('input-area').innerHTML =
-    '<div class="typing-wrap"><div class="typing"><span></span><span></span><span></span></div></div>';
+  // Don't clear the input area — keep it visible but disabled
+  const area = document.getElementById('input-area');
+  const inputs = area.querySelectorAll('textarea, button, .choice-btn');
+  inputs.forEach(el => el.disabled = true);
 }
 
 function showComplete() {
@@ -443,12 +442,16 @@ async function submitAnswer(answer) {
 
   showThinking();
 
+  // Add AI bubble immediately with a loading indicator so the user
+  // sees something is happening, not a blank chat
   const aiWrap = document.createElement('div');
   aiWrap.className = 'msg-ai';
   const aiBubble = document.createElement('div');
   aiBubble.className = 'msg-ai-bubble';
-  aiBubble.innerHTML = '<span class="stream-cursor"></span>';
+  aiBubble.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
   aiWrap.appendChild(aiBubble);
+  chat.appendChild(aiWrap);
+  chat.scrollTop = chat.scrollHeight;
 
   try {
     const resp = await fetch(API + '/chat', {
@@ -457,17 +460,15 @@ async function submitAnswer(answer) {
       body: JSON.stringify({ answer, session_id: sessionId }),
     });
 
-    document.getElementById('input-area').innerHTML = '';
-
     if (!resp.ok) {
       aiBubble.textContent = 'Something went wrong. Try again.';
-      chat.appendChild(aiWrap);
       isStreaming = false;
       showInput(currentChoices);
       return;
     }
 
-    chat.appendChild(aiWrap);
+    // Replace typing dots with streaming cursor
+    aiBubble.innerHTML = '<span class="stream-cursor"></span>';
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
