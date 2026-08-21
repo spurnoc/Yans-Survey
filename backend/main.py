@@ -240,7 +240,7 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
                     "messages": messages,
                     "stream": False,
                     "temperature": 0.3,
-                    "max_tokens": 1200,
+                    "max_tokens": 600,
                 },
                 headers={
                     "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
@@ -354,10 +354,10 @@ async def chat(req: ChatRequest):
 
     sess["conversation"].append({"role": "user", "content": req.answer})
 
-    # Run behavioral analysis in the background (non-blocking)
-    # We do it before building the system prompt so findings from this answer
-    # can inform the next question generation
-    await _run_analysis(current_q_text, req.answer, req.session_id)
+    # Fire behavioral analysis in the background — don't block the survey.
+    # The profile will be ready by the time the NEXT answer comes in.
+    import asyncio
+    asyncio.create_task(_run_analysis(current_q_text, req.answer, req.session_id))
 
     system_prompt = _build_system_prompt(sess)
     messages = [{"role": "system", "content": system_prompt}]
@@ -372,22 +372,27 @@ async def chat(req: ChatRequest):
         messages.insert(1, {"role": "assistant", "content": first_q["text"]})
 
     async def sse_stream():
-        # Non-streaming LLM call — reasoning models sometimes return
-        # content=None in streaming mode. Non-streaming is reliable.
-        # We fake the SSE stream so the frontend code stays the same.
+        # Real streaming — tokens appear as the model generates them.
+        # For reasoning models, delta.content may be null while delta.reasoning
+        # is being emitted. We skip reasoning tokens and only stream content,
+        # but if the model finishes reasoning and there's no content (edge case),
+        # we fall back to a non-streaming retry.
 
         if not SPUR_DEMO_API_KEY:
             yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
             return
 
+        full_response = ""
+
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
-                resp = await client.post(
+                async with client.stream(
+                    "POST",
                     f"{SPUR_API_BASE}/chat/completions",
                     json={
                         "model": SURVEY_MODEL,
                         "messages": messages,
-                        "stream": False,
+                        "stream": True,
                         "temperature": 0.6,
                         "max_tokens": 800,
                     },
@@ -395,26 +400,53 @@ async def chat(req: ChatRequest):
                         "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
                         "Content-Type": "application/json",
                     },
-                )
-                if resp.status_code != 200:
-                    yield f"data: {json.dumps({'error': resp.text[:200]})}\n\n"
-                    return
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
+                        return
 
-                data = resp.json()
-                msg = data["choices"][0]["message"]
-                full_response = msg.get("content") or ""
-                if not full_response and msg.get("reasoning"):
-                    full_response = msg["reasoning"]
+                    got_content = False
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        if line.strip() == "data: [DONE]":
+                            break
+                        try:
+                            chunk = json.loads(line[6:])
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                got_content = True
+                                full_response += content
+                                yield f"data: {json.dumps({'content': content})}\n\n"
+                        except (json.JSONDecodeError, IndexError):
+                            continue
 
-                if not full_response:
-                    yield f"data: {json.dumps({'error': 'Empty response from model'})}\n\n"
-                    return
-
-                # Stream it out in chunks so the frontend shows it progressively
-                chunk_size = 3
-                for i in range(0, len(full_response), chunk_size):
-                    chunk = full_response[i:i + chunk_size]
-                    yield f"data: {json.dumps({'content': chunk})}\n\n"
+                    # Edge case: reasoning model returned only reasoning, no content
+                    if not got_content:
+                        resp2 = await client.post(
+                            f"{SPUR_API_BASE}/chat/completions",
+                            json={
+                                "model": SURVEY_MODEL,
+                                "messages": messages,
+                                "stream": False,
+                                "temperature": 0.6,
+                                "max_tokens": 800,
+                            },
+                            headers={
+                                "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                                "Content-Type": "application/json",
+                            },
+                        )
+                        if resp2.status_code == 200:
+                            msg = resp2.json()["choices"][0]["message"]
+                            full_response = msg.get("content") or ""
+                            if not full_response and msg.get("reasoning"):
+                                full_response = msg["reasoning"]
+                            if full_response:
+                                for i in range(0, len(full_response), 3):
+                                    yield f"data: {json.dumps({'content': full_response[i:i+3]})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
