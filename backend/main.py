@@ -282,13 +282,15 @@ def _build_system_prompt(sess: dict) -> str:
             f"\nThe next question (#{next_q['id']}) is a multiple-choice question. "
             f'The topic is: "{next_q_text}"\n'
             f"The question tag is: {next_q_tag}\n"
-            "Do NOT use fixed options. Generate 3-5 answer choices that are natural to how Benji has been talking.\n"
+            "Generate 3-5 answer choices that are natural to how Benji has been talking. "
             "Make the choices specific and concrete, grounded in what he's said so far. "
             'Mix in a "something else" or "not sure" option.\n'
-            'Present the choices naturally in the conversation — "Would you say you\'re more [A], [B], or maybe [C]?"\n'
-            "Then ALSO append a special marker at the very end of your response, on its own line, formatted as:\n"
+            "IMPORTANT: Do NOT say the choices out loud in your response. Just ask the question naturally — "
+            "the user will see tappable buttons for the choices. Your response should be just the reaction + "
+            "the question, nothing else.\n"
+            "After your response text, on a SEPARATE line at the very end, put ONLY:\n"
             "CHOICES: [option 1] | [option 2] | [option 3]\n"
-            "The frontend will parse this to render tappable buttons."
+            "This line is invisible to the user — it only tells the frontend what buttons to render."
         )
     else:
         choice_instruction = ""
@@ -331,13 +333,17 @@ Example with choices: "Makes sense. If I asked you right now how many catering o
 
 def _parse_choices(text: str) -> tuple[str, list[str]]:
     """Extract CHOICES marker from AI response. Returns (clean_text, choices_list)."""
-    match = re.search(r'\nCHOICES:\s*(.+)$', text, re.IGNORECASE)
+    # Match "CHOICES:" anywhere, case-insensitive, grab the rest of that line
+    match = re.search(r'CHOICES:\s*(.+)', text, re.IGNORECASE)
     if not match:
         return text.strip(), []
 
     choices_str = match.group(1).strip()
     choices = [c.strip() for c in choices_str.split('|') if c.strip()]
+    # Remove the CHOICES line from the visible text
     clean_text = text[:match.start()].strip()
+    # Also strip any trailing newlines left behind
+    clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
     return clean_text, choices
 
 

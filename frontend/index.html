@@ -491,7 +491,9 @@ async function submitAnswer(answer) {
           const data = JSON.parse(dataStr);
           if (data.content) {
             fullText += data.content;
-            aiBubble.innerHTML = escapeHtml(fullText) + '<span class="stream-cursor"></span>';
+            // Strip CHOICES: marker from visible text while streaming
+            const cleanText = fullText.replace(/\n*CHOICES:.*$/is, '').trim();
+            aiBubble.innerHTML = escapeHtml(cleanText) + '<span class="stream-cursor"></span>';
             chat.scrollTop = chat.scrollHeight;
           }
           if (data.state) {
@@ -510,7 +512,9 @@ async function submitAnswer(answer) {
       }
     }
 
-    aiBubble.innerHTML = escapeHtml(fullText);
+    // Final display — strip CHOICES marker
+    const finalText = fullText.replace(/\n*CHOICES:.*$/is, '').trim();
+    aiBubble.innerHTML = escapeHtml(finalText);
 
     // Show next input — use AI-generated choices if available, otherwise text input
     if (qIndex < totalQuestions) {
