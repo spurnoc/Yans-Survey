@@ -505,16 +505,31 @@ async function submitAnswer(answer) {
       }
     }
 
-    // Strip CHOICES marker, then render smoothly
+    // Strip CHOICES marker
     const finalText = fullText.replace(/\n*CHOICES:.*$/is, '').trim();
 
-    // Smooth reveal: fade in the text
-    aiBubble.innerHTML = escapeHtml(finalText);
-    aiBubble.style.opacity = '0';
-    aiBubble.style.transition = 'opacity 0.3s ease';
-    requestAnimationFrame(() => {
-      aiBubble.style.opacity = '1';
+    // Typewriter reveal: dots already showing, now type out the text
+    aiBubble.innerHTML = '<span class="stream-cursor"></span>';
+    await new Promise(resolve => {
+      let i = 0;
+      function tick() {
+        if (i >= finalText.length) { resolve(); return; }
+        i += 2; // 2 chars per tick
+        aiBubble.innerHTML = escapeHtml(finalText.slice(0, i)) + '<span class="stream-cursor"></span>';
+        chat.scrollTop = chat.scrollHeight;
+        const lastChar = finalText[i - 1] || '';
+        let delay = 16;
+        if ('.!?'.includes(lastChar)) delay = 120;
+        else if (',;:'.includes(lastChar)) delay = 50;
+        else if (lastChar === '\n') delay = 40;
+        else if (lastChar === ' ') delay = 10;
+        setTimeout(tick, delay);
+      }
+      tick();
     });
+
+    // Done typing — remove cursor
+    aiBubble.innerHTML = escapeHtml(finalText);
     chat.scrollTop = chat.scrollHeight;
 
     // Show next input
