@@ -442,8 +442,7 @@ async function submitAnswer(answer) {
 
   showThinking();
 
-  // Add AI bubble immediately with a loading indicator so the user
-  // sees something is happening, not a blank chat
+  // AI bubble with loading dots — stays visible during the 1-2s wait
   const aiWrap = document.createElement('div');
   aiWrap.className = 'msg-ai';
   const aiBubble = document.createElement('div');
@@ -452,34 +451,6 @@ async function submitAnswer(answer) {
   aiWrap.appendChild(aiBubble);
   chat.appendChild(aiWrap);
   chat.scrollTop = chat.scrollHeight;
-
-  // Typewriter queue — even if tokens arrive in a burst, we render them
-  // at a readable pace so it always looks like the AI is thinking out loud
-  let displayedText = '';
-  let queuedText = '';
-  let typing = false;
-
-  function pumpQueue() {
-    if (typing) return;
-    if (queuedText.length === 0) return;
-    typing = true;
-    // Render 2-3 chars per tick for a natural typing speed
-    const chunk = queuedText.splice(0, 2 + Math.floor(Math.random() * 2));
-    displayedText += chunk;
-    const cleanText = displayedText.replace(/\n*CHOICES:.*$/is, '').trim();
-    aiBubble.innerHTML = escapeHtml(cleanText) + '<span class="stream-cursor"></span>';
-    chat.scrollTop = chat.scrollHeight;
-    // Variable delay: pause longer after punctuation for natural rhythm
-    const lastChar = chunk[chunk.length - 1];
-    let delay = 18;
-    if (lastChar === '.' || lastChar === '!' || lastChar === '?') delay = 140;
-    else if (lastChar === ',' || lastChar === ';' || lastChar === '\n') delay = 60;
-    else if (lastChar === ' ') delay = 12;
-    setTimeout(() => {
-      typing = false;
-      pumpQueue();
-    }, delay);
-  }
 
   try {
     const resp = await fetch(API + '/chat', {
@@ -495,9 +466,7 @@ async function submitAnswer(answer) {
       return;
     }
 
-    // Switch from dots to empty cursor (will fill via typewriter)
-    aiBubble.innerHTML = '<span class="stream-cursor"></span>';
-
+    // Read the full response from the stream
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
@@ -520,9 +489,6 @@ async function submitAnswer(answer) {
           const data = JSON.parse(dataStr);
           if (data.content) {
             fullText += data.content;
-            // Queue chars for the typewriter instead of dumping them
-            queuedText.push(...data.content);
-            pumpQueue();
           }
           if (data.state) {
             qIndex = data.state.q_index;
@@ -539,16 +505,19 @@ async function submitAnswer(answer) {
       }
     }
 
-    // Wait for the typewriter to finish before showing input
-    while (displayedText.length < fullText.replace(/\n*CHOICES:.*$/is, '').trim().length) {
-      await new Promise(r => setTimeout(r, 50));
-    }
-
-    // Final display — strip CHOICES marker
+    // Strip CHOICES marker, then render smoothly
     const finalText = fullText.replace(/\n*CHOICES:.*$/is, '').trim();
-    aiBubble.innerHTML = escapeHtml(finalText);
 
-    // Show next input — use AI-generated choices if available, otherwise text input
+    // Smooth reveal: fade in the text
+    aiBubble.innerHTML = escapeHtml(finalText);
+    aiBubble.style.opacity = '0';
+    aiBubble.style.transition = 'opacity 0.3s ease';
+    requestAnimationFrame(() => {
+      aiBubble.style.opacity = '1';
+    });
+    chat.scrollTop = chat.scrollHeight;
+
+    // Show next input
     if (qIndex < totalQuestions) {
       if (pendingChoices && pendingChoices.length > 0) {
         showInput(pendingChoices);
