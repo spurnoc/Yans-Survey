@@ -373,16 +373,10 @@ Example with choices: "Makes sense. If I asked you right now how many catering o
 
 
 def _parse_response(text: str) -> tuple[str, list[str], str]:
-    """Extract ACTION and CHOICES markers from AI response.
+    """Extract CHOICES markers and determine action from AI response.
     Returns (clean_text, choices_list, action) where action is 'ADVANCE' or 'PROBE'.
     """
-    action = "ADVANCE"  # default
     choices = []
-
-    # Extract ACTION
-    action_match = re.search(r'ACTION:\s*(ADVANCE|PROBE)', text, re.IGNORECASE)
-    if action_match:
-        action = action_match.group(1).upper()
 
     # Extract CHOICES
     choices_match = re.search(r'CHOICES:\s*(.+)', text, re.IGNORECASE)
@@ -394,6 +388,16 @@ def _parse_response(text: str) -> tuple[str, list[str], str]:
     clean_text = re.sub(r'ACTION:\s*\w+', '', text, flags=re.IGNORECASE)
     clean_text = re.sub(r'CHOICES:\s*.+', '', clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+    # Check if AI explicitly said ADVANCE or PROBE
+    action_match = re.search(r'ACTION:\s*(ADVANCE|PROBE)', text, re.IGNORECASE)
+    if action_match:
+        action = action_match.group(1).upper()
+    else:
+        # AI didn't include the marker — guess based on content.
+        # If response is short and ends with a question mark but doesn't
+        # reference the next scripted question, it's likely a probe.
+        action = "ADVANCE"  # default to advance
 
     return clean_text, choices, action
 
@@ -508,7 +512,25 @@ async def chat(req: ChatRequest):
         # Parse action and choices from the response
         clean_text, choices, action = _parse_response(full_response)
 
-        # Advance or probe based on AI's explicit signal
+        # Determine if AI advanced or probed
+        # Structural approach: check if the AI's response contains key words
+        # from the NEXT question (meaning it asked the next question)
+        next_q = QUESTIONS[sess["q_index"] + 1] if sess["q_index"] + 1 < len(QUESTIONS) else None
+
+        if next_q and action == "ADVANCE":
+            # AI said ADVANCE — but verify: does the response actually reference
+            # the next question's topic? If not, it was probably a probe and
+            # the AI forgot the marker.
+            next_keywords = [w.lower() for w in next_q["text"].split() if len(w) > 4]
+            response_lower = clean_text.lower()
+            keyword_hits = sum(1 for kw in next_keywords if kw in response_lower)
+            keyword_ratio = keyword_hits / max(len(next_keywords), 1)
+
+            if keyword_ratio < 0.15 and sess["probe_count"] == 0:
+                # AI said ADVANCE but didn't actually ask the next question —
+                # it probed instead. Keep on current question.
+                action = "PROBE"
+
         if action == "ADVANCE":
             sess["q_index"] += 1
             sess["probe_count"] = 0
