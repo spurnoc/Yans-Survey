@@ -505,9 +505,8 @@ async function submitAnswer(answer) {
       }
     }
 
-    // Strip CHOICES and ACTION markers from the text the typewriter will reveal
+    // Strip CHOICES marker from the text the typewriter will reveal
     const finalText = fullText
-      .replace(/\n*ACTION:\s*\w+/gi, '')
       .replace(/\n*CHOICES:\s*[^\n]+/gi, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim();

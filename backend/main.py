@@ -288,15 +288,10 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
 
 
 # ── System prompt builder (includes behavioral profile) ─────────
-def _build_system_prompt(sess: dict, should_probe: bool = False) -> str:
-    # q = the question that was JUST answered (before increment)
-    # When advancing, sess["q_index"] already points to the NEXT question
-    q = QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None
-
-    current_q_text = q["text"] if q else "Survey complete."
-
-    # When advancing, q_index already points to the NEXT question.
-    # When probing, q_index still points to the current question.
+def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, answered_q_text: str) -> str:
+    # The target question is the one the AI should ask now.
+    # When advancing, sess["q_index"] already points to the next question.
+    # When probing, it still points to the current (same) question.
     target_q = QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None
 
     if not target_q:
@@ -310,7 +305,7 @@ def _build_system_prompt(sess: dict, should_probe: bool = False) -> str:
     target_q_tag = target_q.get("tag", "")
     target_q_id = target_q["id"]
 
-    if target_q_type == "choice":
+    if target_q_type == "choice" and not should_probe:
         choice_instruction = (
             f"\nQuestion #{target_q_id} is a multiple-choice question. "
             f'The topic is: "{target_q_text}"\n'
@@ -340,19 +335,23 @@ def _build_system_prompt(sess: dict, should_probe: bool = False) -> str:
     # Tell the AI exactly what to do.
     if should_probe:
         action_instruction = (
-            f"\nINSTRUCTION: The respondent's answer was short. Ask ONE follow-up probe to draw him out "
+            f"\nINSTRUCTION: The respondent's answer to question #{answered_q_id} was short. "
+            f"Ask ONE follow-up probe to draw him out "
             f"(e.g. 'Can you say more about that?' or 'What do you mean by that?'). "
-            f"Do NOT ask the next survey question yet. Stay on question #{q['id']}."
+            f"Do NOT ask the next survey question yet."
         )
-    elif target_q_id != q["id"]:
+    elif target_q_id != answered_q_id:
         # Advancing to a new question
         action_instruction = (
             f"\nINSTRUCTION: React briefly to his answer, then ask question #{target_q_id}: "
             f'"{target_q_text}". Rephrase it naturally — do not read it verbatim.'
         )
     else:
-        # Last question was answered, survey complete
-        action_instruction = "\nINSTRUCTION: The survey is complete. Thank him naturally."
+        # Same question id but not probing — shouldn't happen normally
+        action_instruction = (
+            f"\nINSTRUCTION: React briefly to his answer, then ask question #{target_q_id}: "
+            f'"{target_q_text}". Rephrase it naturally.'
+        )
 
     return (
         f"""You are conducting a conversational survey with Benji, the owner of Yans Deli. You're having a real conversation — one question at a time, react to his answers like a normal person would, then move on.
@@ -363,7 +362,7 @@ CRITICAL RULES:
 3. When asking the next question, don't just read it verbatim. Rephrase it naturally to fit the conversation. Keep the meaning, change the words.
 
 CURRENT STATE:
-- Just answered question #{q['id']}: {current_q_text}
+- Just answered question #{answered_q_id}: {answered_q_text}
 - Next question #{target_q_id}: {target_q_text}
 - Next question type: {target_q_type}
 
@@ -411,7 +410,7 @@ async def chat(req: ChatRequest):
     if sess["q_index"] >= len(QUESTIONS):
         return JSONResponse({"done": True, "message": "Survey already complete."})
 
-    # Get the current question text for analysis
+    # Get the current question (the one being answered right now)
     current_q = QUESTIONS[sess["q_index"]]
     current_q_text = current_q["text"]
 
@@ -426,20 +425,22 @@ async def chat(req: ChatRequest):
     answer_word_count = len(req.answer.split())
     is_short_answer = answer_word_count < 12
 
+    answered_q_id = current_q["id"]
+    answered_q_text = current_q_text
+
     if sess["probe_count"] == 0 and is_short_answer and current_q["type"] == "text":
-        # Allow one probe — tell the AI to draw him out
+        # Probe: stay on the same question
         should_probe = True
         sess["probe_count"] = 1
     else:
-        # Force advance — tell the AI to ask the next question
+        # Advance: move to the next question
         should_probe = False
         sess["q_index"] += 1
         sess["probe_count"] = 0
 
-    system_prompt = _build_system_prompt(sess, should_probe)
+    system_prompt = _build_system_prompt(sess, should_probe, answered_q_id, answered_q_text)
     messages = [{"role": "system", "content": system_prompt}]
-    # Send the FULL conversation for context — the model needs to remember
-    # all prior answers to adapt properly
+    # Send the FULL conversation for context
     for msg in sess["conversation"]:
         if msg["role"] == "user":
             messages.append({"role": "user", "content": msg["content"]})
