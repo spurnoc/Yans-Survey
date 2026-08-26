@@ -163,7 +163,7 @@ def _save_session(sess: dict):
         sess["probe_count"],
     ))
     conn.commit()
-    conn.close()
+    pass  # libsql Connection doesn't support close()
 
 
 def _reset_session(session_id: str):
@@ -177,7 +177,7 @@ def _reset_session(session_id: str):
         VALUES (?, '', datetime('now'))
     """, (session_id,))
     conn.commit()
-    conn.close()
+    pass  # libsql Connection doesn't support close()
 
 
 def _load_profile(session_id: str) -> str:
@@ -195,7 +195,7 @@ def _save_profile(session_id: str, content: str):
         VALUES (?, ?, datetime('now'))
     """, (session_id, content))
     conn.commit()
-    conn.close()
+    pass  # libsql Connection doesn't support close()
 
 
 def _get_state(sess: dict) -> dict:
