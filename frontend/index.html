@@ -306,6 +306,12 @@ if (!sessionId) {
   localStorage.setItem('survey_session_id', sessionId);
 }
 
+// Auto-scroll to bottom of chat
+function autoScroll() {
+  const chat = document.getElementById('chat-area');
+  if (chat) chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
+}
+
 async function init() {
   try {
     const state = await fetch(`${API}/state?session_id=${sessionId}`).then(r => r.json());
@@ -315,6 +321,7 @@ async function init() {
     if (state.conversation && state.conversation.length > 0) {
       // Returning user — restore the full conversation
       renderExistingConversation(state);
+      autoScroll();
     } else {
       // New user — show the opening message
       const chat = document.getElementById('chat-area');
@@ -322,6 +329,7 @@ async function init() {
         <div class="msg-ai">
           <div class="msg-ai-bubble">Hey Benji — quick survey about how you run things day to day. No wrong answers, just want to understand your world. First one: <strong>Right now, how do you keep track of all this? Reviews, money, marketing.</strong></div>
         </div>`;
+      autoScroll();
     }
 
     updateProgress();
@@ -359,6 +367,7 @@ function renderExistingConversation(state) {
     }
   }
   chat.scrollTop = chat.scrollHeight;
+  autoScroll();
 }
 
 function updateProgress() {
@@ -391,8 +400,11 @@ function showInput(choices) {
     choices.forEach((c, i) => {
       html += `<button class="choice-btn" style="animation-delay:${i * 40}ms" onclick="submitAnswer('${c.replace(/'/g, "\\'")}')"><div class="dot"></div><span>${escapeHtml(c)}</span></button>`;
     });
+    // Add "type your own" option
+    html += `<button class="choice-btn" style="animation-delay:${choices.length * 40}ms" onclick="switchToTextInput()"><div class="dot"></div><span style="color:var(--warm-muted);font-style:italic">Type my own answer...</span></button>`;
     html += '</div>';
     area.innerHTML = html;
+    autoScroll();
   } else {
     area.innerHTML = `
       <div class="text-wrap">
@@ -400,7 +412,20 @@ function showInput(choices) {
         <button class="send-btn" onclick="submitTextAnswer()" id="send-btn">→</button>
       </div>`;
     setTimeout(() => document.getElementById('text-answer')?.focus(), 50);
+    autoScroll();
   }
+}
+
+function switchToTextInput() {
+  // Replace choices with a text input, keeping the same choices context
+  const area = document.getElementById('input-area');
+  area.innerHTML = `
+    <div class="text-wrap">
+      <textarea class="text-input" id="text-answer" placeholder="Type your answer..." rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
+      <button class="send-btn" onclick="submitTextAnswer()" id="send-btn">→</button>
+    </div>`;
+  setTimeout(() => document.getElementById('text-answer')?.focus(), 50);
+  autoScroll();
 }
 
 function showThinking() {
@@ -423,6 +448,7 @@ function showComplete() {
   `;
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
+  autoScroll();
   document.getElementById('input-area').innerHTML = '';
   document.getElementById('header-sub').textContent = 'Complete';
   loadTranscript();
@@ -439,6 +465,7 @@ async function submitAnswer(answer) {
   userMsg.textContent = answer;
   chat.appendChild(userMsg);
   chat.scrollTop = chat.scrollHeight;
+  autoScroll();
 
   showThinking();
 
@@ -451,6 +478,7 @@ async function submitAnswer(answer) {
   aiWrap.appendChild(aiBubble);
   chat.appendChild(aiWrap);
   chat.scrollTop = chat.scrollHeight;
+  autoScroll();
 
   try {
     const resp = await fetch(API + '/chat', {
@@ -519,7 +547,7 @@ async function submitAnswer(answer) {
         if (i >= finalText.length) { resolve(); return; }
         i += 2; // 2 chars per tick
         aiBubble.innerHTML = escapeHtml(finalText.slice(0, i)) + '<span class="stream-cursor"></span>';
-        chat.scrollTop = chat.scrollHeight;
+        autoScroll();
         const lastChar = finalText[i - 1] || '';
         let delay = 16;
         if ('.!?'.includes(lastChar)) delay = 120;
@@ -534,6 +562,7 @@ async function submitAnswer(answer) {
     // Done typing — remove cursor
     aiBubble.innerHTML = escapeHtml(finalText);
     chat.scrollTop = chat.scrollHeight;
+    autoScroll();
 
     // Show next input
     if (qIndex < totalQuestions) {
@@ -543,6 +572,7 @@ async function submitAnswer(answer) {
       } else {
         showInput();
       }
+      autoScroll();
     }
 
   } catch (e) {
