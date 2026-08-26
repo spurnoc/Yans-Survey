@@ -289,33 +289,36 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
 
 # ── System prompt builder (includes behavioral profile) ─────────
 def _build_system_prompt(sess: dict, should_probe: bool = False) -> str:
+    # q = the question that was JUST answered (before increment)
+    # When advancing, sess["q_index"] already points to the NEXT question
     q = QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None
-    next_q = QUESTIONS[sess["q_index"] + 1] if sess["q_index"] + 1 < len(QUESTIONS) else None
 
     current_q_text = q["text"] if q else "Survey complete."
-    next_q_text = next_q["text"] if next_q else ""
-    next_q_type = next_q["type"] if next_q else ""
-    next_q_tag = next_q.get("tag", "") if next_q else ""
-    already_probed = sess["probe_count"] > 0
 
-    if not q:
+    # When advancing, q_index already points to the NEXT question.
+    # When probing, q_index still points to the current question.
+    target_q = QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None
+
+    if not target_q:
         return (
             "You are conducting a conversational survey with Benji, the owner of Yans Deli. "
             "The survey is now complete. Thank him naturally and say something genuine about what he shared."
         )
 
-    if next_q_type == "choice":
+    target_q_text = target_q["text"]
+    target_q_type = target_q["type"]
+    target_q_tag = target_q.get("tag", "")
+    target_q_id = target_q["id"]
+
+    if target_q_type == "choice":
         choice_instruction = (
-            f"\nThe next question (#{next_q['id']}) is a multiple-choice question. "
-            f'The topic is: "{next_q_text}"\n'
-            f"The question tag is: {next_q_tag}\n"
-            "Generate 3-5 answer choices that are natural to how Benji has been talking. "
-            "Make the choices specific and concrete, grounded in what he's said so far. "
-            'Mix in a "something else" or "not sure" option.\n'
-            "IMPORTANT: Do NOT say the choices out loud in your response. Just ask the question naturally — "
-            "the user will see tappable buttons for the choices. Your response should be just the reaction + "
-            "the question, nothing else.\n"
-            "After your response text, on a SEPARATE line at the very end, put ONLY:\n"
+            f"\nQuestion #{target_q_id} is a multiple-choice question. "
+            f'The topic is: "{target_q_text}"\n'
+            f"Tag: {target_q_tag}\n"
+            "Generate 3-5 answer choices natural to how Benji has been talking. "
+            "Make them specific and concrete. Mix in a 'something else' or 'not sure' option.\n"
+            "IMPORTANT: Do NOT say the choices out loud. Just ask the question naturally. "
+            "After your response, on a SEPARATE line at the very end, put ONLY:\n"
             "CHOICES: [option 1] | [option 2] | [option 3]\n"
             "This line is invisible to the user."
         )
@@ -341,12 +344,14 @@ def _build_system_prompt(sess: dict, should_probe: bool = False) -> str:
             f"(e.g. 'Can you say more about that?' or 'What do you mean by that?'). "
             f"Do NOT ask the next survey question yet. Stay on question #{q['id']}."
         )
-    elif next_q:
+    elif target_q_id != q["id"]:
+        # Advancing to a new question
         action_instruction = (
-            f"\nINSTRUCTION: React briefly to his answer, then ask question #{next_q['id']}: "
-            f'"{next_q_text}". Rephrase it naturally — do not read it verbatim.'
+            f"\nINSTRUCTION: React briefly to his answer, then ask question #{target_q_id}: "
+            f'"{target_q_text}". Rephrase it naturally — do not read it verbatim.'
         )
     else:
+        # Last question was answered, survey complete
         action_instruction = "\nINSTRUCTION: The survey is complete. Thank him naturally."
 
     return (
@@ -358,10 +363,9 @@ CRITICAL RULES:
 3. When asking the next question, don't just read it verbatim. Rephrase it naturally to fit the conversation. Keep the meaning, change the words.
 
 CURRENT STATE:
-- Current question #{q['id']}: {current_q_text}
-- Next question #{next_q['id'] if next_q else 'done'}: {next_q_text}
-- Next question type: {next_q_type}
-- Next question tag: {next_q_tag}
+- Just answered question #{q['id']}: {current_q_text}
+- Next question #{target_q_id}: {target_q_text}
+- Next question type: {target_q_type}
 
 Respond as plain text. Just the reaction and the question. No markers, no JSON, no formatting.
 {action_instruction}
@@ -434,15 +438,15 @@ async def chat(req: ChatRequest):
 
     system_prompt = _build_system_prompt(sess, should_probe)
     messages = [{"role": "system", "content": system_prompt}]
-    # Send last 12 messages for context (enough to remember recent answers
-    # without bloating the prompt and slowing down the model)
-    recent = sess["conversation"][-12:]
-    for msg in recent:
+    # Send the FULL conversation for context — the model needs to remember
+    # all prior answers to adapt properly
+    for msg in sess["conversation"]:
         if msg["role"] == "user":
             messages.append({"role": "user", "content": msg["content"]})
         else:
             messages.append({"role": "assistant", "content": msg["content"]})
 
+    # For the first answer, inject the opening question so the AI knows what was asked
     if len(sess["conversation"]) == 1:
         first_q = QUESTIONS[0]
         messages.insert(1, {"role": "assistant", "content": first_q["text"]})
