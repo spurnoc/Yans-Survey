@@ -410,7 +410,8 @@ async def chat(req: ChatRequest):
 
     system_prompt = _build_system_prompt(sess)
     messages = [{"role": "system", "content": system_prompt}]
-    for msg in sess["conversation"][-6:]:
+    # Send the FULL conversation — 13 questions is small enough to fit in context
+    for msg in sess["conversation"]:
         if msg["role"] == "user":
             messages.append({"role": "user", "content": msg["content"]})
         else:
