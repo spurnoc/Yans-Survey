@@ -521,18 +521,21 @@ async def chat(req: ChatRequest):
     import asyncio
     asyncio.create_task(_run_analysis(current_q_text, req.answer, sess["session_id"]))
 
-    # Ask a smarter model whether this answer needs a probe
-    should_probe = await _should_probe_llm(current_q_text, req.answer, sess["probe_count"] > 0)
-
     answered_q_id = current_q["id"]
     answered_q_text = current_q_text
 
-    # Determine the target question index (what the AI should ask next)
-    # DON'T modify sess["q_index"] yet — we'll do that AFTER the AI responds.
-    if should_probe:
-        target_q_index = sess["q_index"]  # same question
+    # Determine the target question (what the AI should ask next)
+    # If already probed once, force advance. Otherwise, advance.
+    # (We removed the separate probe LLM — the survey model will handle
+    # probing naturally if the answer is thin, but q_index advances regardless.)
+    if sess["probe_count"] > 0:
+        # Already probed — force advance
+        target_q_index = sess["q_index"] + 1
+        should_probe = False
     else:
-        target_q_index = sess["q_index"] + 1  # next question
+        # First answer — advance to next question
+        target_q_index = sess["q_index"] + 1
+        should_probe = False
 
     # Build the prompt with the target question
     system_prompt = _build_system_prompt(sess, should_probe, answered_q_id, answered_q_text, target_q_index)
@@ -548,6 +551,16 @@ async def chat(req: ChatRequest):
     if len(sess["conversation"]) == 1:
         first_q = QUESTIONS[0]
         messages.insert(1, {"role": "assistant", "content": first_q["text"]})
+
+    # INJECT the exact question as a final user message so the AI can't ignore it.
+    # This is the key fix — putting the instruction in the conversation, not just the system prompt.
+    if target_q_index < len(QUESTIONS):
+        target_q = QUESTIONS[target_q_index]
+        messages.append({"role": "user", "content": (
+            f"[SYSTEM — do not repeat this message to the user]\n"
+            f"Ask the survey respondent this question now: \"{target_q['text']}\"\n"
+            f"Rephrase it naturally. React to his previous answer first, then ask this question."
+        )})
 
     async def sse_stream():
         full_response = ""
@@ -627,34 +640,22 @@ async def chat(req: ChatRequest):
         # Parse choices from the response
         clean_text, choices, _ = _parse_response(full_response)
 
-        # Now update q_index based on what actually happened.
-        # Use LLM QA check to verify the AI actually asked the target question.
-        if not should_probe and target_q_index < len(QUESTIONS):
-            target_q = QUESTIONS[target_q_index]
-            # Ask a smarter model: did the AI ask the target question?
-            advanced = await _verify_advance_llm(target_q["text"], clean_text)
-
+        # Always advance — we told the AI to ask the next question via the injected message.
+        # The QA check is still useful to detect if the AI probed instead, but we
+        # always advance q_index to prevent loops.
+        if target_q_index < len(QUESTIONS):
+            # Verify the AI asked the target question (for logging/debugging)
+            advanced = await _verify_advance_llm(QUESTIONS[target_q_index]["text"], clean_text)
             if advanced:
-                # AI asked the target question — advance confirmed
-                sess["q_index"] = target_q_index
                 sess["probe_count"] = 0
             else:
-                # AI probed instead of advancing — stay on current question
-                # but increment probe_count. After 3, force advance.
+                # AI probed instead — mark it but still advance
                 sess["probe_count"] += 1
-                if sess["probe_count"] >= 3:
-                    sess["q_index"] = target_q_index
-                    sess["probe_count"] = 0
-        elif not should_probe:
-            # Last question answered — survey complete
+            sess["q_index"] = target_q_index
+        else:
+            # Survey complete
             sess["q_index"] = target_q_index
             sess["probe_count"] = 0
-        else:
-            # We told the AI to probe — q_index stays
-            sess["probe_count"] += 1
-            if sess["probe_count"] >= 3:
-                sess["q_index"] = min(sess["q_index"] + 1, len(QUESTIONS))
-                sess["probe_count"] = 0
 
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
