@@ -293,7 +293,7 @@ async def _should_probe_llm(question_text: str, answer: str, already_probed: boo
     if already_probed:
         return False  # never probe twice
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             resp = await client.post(
                 f"{SPUR_API_BASE}/chat/completions",
                 json={
@@ -302,7 +302,7 @@ async def _should_probe_llm(question_text: str, answer: str, already_probed: boo
                         {"role": "system", "content": (
                             "You judge whether a survey answer is substantive enough to move on, "
                             "or too thin/vague and needs a follow-up. "
-                            "Reply with ONLY 'PROBE' or 'ADVANCE'. "
+                            "Reply with ONLY 'PROBE' or 'ADVANCE' — nothing else. "
                             "PROBE if the answer is vague, evasive, or missing key detail. "
                             "ADVANCE if the answer actually addresses the question, even if brief."
                         )},
@@ -315,7 +315,7 @@ async def _should_probe_llm(question_text: str, answer: str, already_probed: boo
                     ],
                     "stream": False,
                     "temperature": 0.1,
-                    "max_tokens": 10,
+                    "max_tokens": 800,
                 },
                 headers={
                     "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
@@ -378,11 +378,18 @@ def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, ans
             f"{profile}\n"
         )
 
+    # Build list of questions already asked (so AI doesn't repeat them)
+    asked_questions = []
+    for i in range(sess["q_index"]):
+        if i < len(QUESTIONS):
+            asked_questions.append(f"Q{QUESTIONS[i]['id']}: {QUESTIONS[i]['text']}")
+    asked_list = "\n".join(asked_questions) if asked_questions else "None yet"
+
     # The backend has ALREADY decided whether to probe or advance.
     # Tell the AI exactly what to do.
     if should_probe:
         action_instruction = (
-            f"\nINSTRUCTION: The respondent's answer to question #{answered_q_id} was short. "
+            f"\nINSTRUCTION: The respondent's answer to question #{answered_q_id} was short or vague. "
             f"Ask ONE follow-up probe to draw him out "
             f"(e.g. 'Can you say more about that?' or 'What do you mean by that?'). "
             f"Do NOT ask the next survey question yet."
@@ -391,10 +398,10 @@ def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, ans
         # Advancing to a new question
         action_instruction = (
             f"\nINSTRUCTION: React briefly to his answer, then ask question #{target_q_id}: "
-            f'"{target_q_text}". Rephrase it naturally — do not read it verbatim.'
+            f'"{target_q_text}". Rephrase it naturally — do not read it verbatim. '
+            f"This is a NEW question about a different topic. Do NOT repeat anything from the asked list."
         )
     else:
-        # Same question id but not probing — shouldn't happen normally
         action_instruction = (
             f"\nINSTRUCTION: React briefly to his answer, then ask question #{target_q_id}: "
             f'"{target_q_text}". Rephrase it naturally.'
@@ -407,7 +414,10 @@ CRITICAL RULES:
 1. You are NOT a robot. React to what he says. "Got it." "That makes sense." "Honestly, that's smart." Be real but brief — one short sentence max.
 2. Keep everything SHORT. Your reaction + the next question should be 2-3 sentences total. This is a conversation, not an essay.
 3. When asking the next question, don't just read it verbatim. Rephrase it naturally to fit the conversation. Keep the meaning, change the words.
-4. NEVER repeat a question you've already asked. Look at the conversation history — if you already asked about something, move on to the NEXT question.
+4. NEVER repeat a question you've already asked. The questions already covered are listed below. Do NOT ask about those topics again.
+
+QUESTIONS ALREADY ASKED (do NOT repeat these):
+{asked_list}
 
 CURRENT STATE:
 - Just answered question #{answered_q_id}: {answered_q_text}
