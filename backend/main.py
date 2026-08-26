@@ -476,7 +476,7 @@ async def chat(req: ChatRequest):
 
     # Fire behavioral analysis in the background — don't block the survey.
     import asyncio
-    asyncio.create_task(_run_analysis(current_q_text, req.answer, req.session_id))
+    asyncio.create_task(_run_analysis(current_q_text, req.answer, sess["session_id"]))
 
     # Ask a smarter model whether this answer needs a probe
     should_probe = await _should_probe_llm(current_q_text, req.answer, sess["probe_count"] > 0)
@@ -484,11 +484,21 @@ async def chat(req: ChatRequest):
     answered_q_id = current_q["id"]
     answered_q_text = current_q_text
 
-    if should_probe:
-        sess["probe_count"] = 1
-    else:
+    # DON'T increment q_index yet — we'll do that AFTER the AI responds,
+    # once we can verify it actually asked the next question.
+    # Build the prompt telling the AI to probe or advance.
+    # If advancing, we pass the NEXT question as the target.
+    if not should_probe and sess["q_index"] + 1 < len(QUESTIONS):
+        # Temporarily set q_index+1 so the prompt builder shows the next question
         sess["q_index"] += 1
         sess["probe_count"] = 0
+    elif not should_probe:
+        # Last question, survey will be complete
+        sess["q_index"] += 1
+        sess["probe_count"] = 0
+    else:
+        # Probing — q_index stays the same
+        sess["probe_count"] = 1
 
     system_prompt = _build_system_prompt(sess, should_probe, answered_q_id, answered_q_text)
     messages = [{"role": "system", "content": system_prompt}]
@@ -579,8 +589,27 @@ async def chat(req: ChatRequest):
             yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
             return
 
-        # Parse choices from the response (action was already decided before the LLM call)
+        # Parse choices from the response
         clean_text, choices, _ = _parse_response(full_response)
+
+        # CRITICAL: Verify the AI actually advanced when told to.
+        # If we told it to advance (should_probe=False) but the response
+        # doesn't contain keywords from the target question, the AI
+        # probed instead. Roll back the q_index.
+        if not should_probe and answered_q_id < len(QUESTIONS):
+            target_q = QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None
+            if target_q and target_q["id"] != answered_q_id:
+                # We told it to advance to target_q. Check if it did.
+                target_keywords = [w.lower() for w in target_q["text"].split() if len(w) > 4]
+                response_lower = clean_text.lower()
+                keyword_hits = sum(1 for kw in target_keywords if kw in response_lower)
+                keyword_ratio = keyword_hits / max(len(target_keywords), 1)
+
+                if keyword_ratio < 0.15:
+                    # AI didn't ask the next question — it probed instead.
+                    # Roll back q_index so we don't lose the question.
+                    sess["q_index"] = answered_q_id - 1  # back to the question that was just answered
+                    sess["probe_count"] = 1  # mark as probed so next answer forces advance
 
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
