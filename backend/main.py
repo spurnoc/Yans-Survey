@@ -66,11 +66,14 @@ def _turso_url():
 
 
 def _turso_execute(sql: str, args: list = None):
-    """Execute a SQL statement via the Turso HTTP API."""
+    """Execute a SQL statement via the Turso HTTP API.
+    Args should be a list of dicts like {"type": "text", "value": "hello"}.
+    The value is ALWAYS a string, even for integers.
+    """
     stmt = {"sql": sql}
     if args:
-        # Turso v2 API expects args as simple strings, not typed objects
-        stmt["args"] = [str(a["value"]) for a in args]
+        # Ensure all values are strings
+        stmt["args"] = [{"type": a.get("type", "text"), "value": str(a["value"])} for a in args]
     body = {"requests": [{"type": "execute", "stmt": stmt}]}
     resp = httpx.post(
         _turso_url(),
@@ -82,7 +85,7 @@ def _turso_execute(sql: str, args: list = None):
         timeout=30.0,
     )
     if resp.status_code != 200:
-        raise Exception(f"Turso API error: {resp.status_code} {resp.text[:200]}")
+        raise Exception(f"Turso API error: {resp.status_code} {resp.text[:300]}")
     return resp.json()
 
 
@@ -90,7 +93,7 @@ def _turso_query(sql: str, args: list = None) -> list[dict]:
     """Execute a SELECT and return rows as dicts."""
     stmt = {"sql": sql}
     if args:
-        stmt["args"] = [str(a["value"]) for a in args]
+        stmt["args"] = [{"type": a.get("type", "text"), "value": str(a["value"])} for a in args]
     body = {"requests": [{"type": "execute", "stmt": stmt}]}
     resp = httpx.post(
         _turso_url(),
@@ -102,7 +105,7 @@ def _turso_query(sql: str, args: list = None) -> list[dict]:
         timeout=30.0,
     )
     if resp.status_code != 200:
-        raise Exception(f"Turso API error: {resp.status_code} {resp.text[:200]}")
+        raise Exception(f"Turso API error: {resp.status_code} {resp.text[:300]}")
     data = resp.json()
     results = data.get("results", [])
     if not results:
@@ -118,10 +121,11 @@ def _turso_query(sql: str, args: list = None) -> list[dict]:
         values = []
         for v in row:
             if isinstance(v, dict):
-                values.append(v.get("value"))
-            elif isinstance(v, (int, float)):
-                # Turso returns numbers as strings — convert back
-                values.append(int(v) if isinstance(v, int) else v)
+                val = v.get("value")
+                # Try to convert numeric strings back to int
+                if val and val.lstrip('-').isdigit():
+                    val = int(val)
+                values.append(val)
             else:
                 values.append(v)
         rows.append(dict(zip(cols, values)))
