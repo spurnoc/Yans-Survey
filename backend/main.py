@@ -288,7 +288,7 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
 
 
 # ── System prompt builder (includes behavioral profile) ─────────
-def _build_system_prompt(sess: dict) -> str:
+def _build_system_prompt(sess: dict, should_probe: bool = False) -> str:
     q = QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None
     next_q = QUESTIONS[sess["q_index"] + 1] if sess["q_index"] + 1 < len(QUESTIONS) else None
 
@@ -315,17 +315,12 @@ def _build_system_prompt(sess: dict) -> str:
             "IMPORTANT: Do NOT say the choices out loud in your response. Just ask the question naturally — "
             "the user will see tappable buttons for the choices. Your response should be just the reaction + "
             "the question, nothing else.\n"
-            "After your response text, on SEPARATE lines at the very end, put ONLY:\n"
-            "ACTION: ADVANCE\n"
+            "After your response text, on a SEPARATE line at the very end, put ONLY:\n"
             "CHOICES: [option 1] | [option 2] | [option 3]\n"
-            "These lines are invisible to the user."
-        )
-    else:
-        choice_instruction = (
-            "\nAfter your response text, on a SEPARATE line at the very end, put ONLY:\n"
-            "ACTION: ADVANCE\n"
             "This line is invisible to the user."
         )
+    else:
+        choice_instruction = ""
 
     # Load behavioral profile if it exists (cap to last 1500 chars to keep prompt lean)
     profile = _load_profile(sess["session_id"])
@@ -338,36 +333,39 @@ def _build_system_prompt(sess: dict) -> str:
             f"{profile}\n"
         )
 
+    # The backend has ALREADY decided whether to probe or advance.
+    # Tell the AI exactly what to do.
+    if should_probe:
+        action_instruction = (
+            f"\nINSTRUCTION: The respondent's answer was short. Ask ONE follow-up probe to draw him out "
+            f"(e.g. 'Can you say more about that?' or 'What do you mean by that?'). "
+            f"Do NOT ask the next survey question yet. Stay on question #{q['id']}."
+        )
+    elif next_q:
+        action_instruction = (
+            f"\nINSTRUCTION: React briefly to his answer, then ask question #{next_q['id']}: "
+            f'"{next_q_text}". Rephrase it naturally — do not read it verbatim.'
+        )
+    else:
+        action_instruction = "\nINSTRUCTION: The survey is complete. Thank him naturally."
+
     return (
         f"""You are conducting a conversational survey with Benji, the owner of Yans Deli. You're having a real conversation — one question at a time, react to his answers like a normal person would, then move on.
 
 CRITICAL RULES:
 1. You are NOT a robot. React to what he says. "Got it." "That makes sense." "Honestly, that's smart." Be real but brief — one short sentence max.
-2. If his answer is thin or vague (like "I don't know" or one word for an open question), ask ONE follow-up probe to draw him out. Natural phrasing: "Can you say more about that?" "What do you mean by that?" Only probe ONCE per question, then move on.
-3. If his answer is substantive, DON'T probe. React and move to the next question.
-4. When asking the next question, don't just read it verbatim. Rephrase it naturally to fit the conversation. Keep the meaning, change the words.
-5. Keep everything SHORT. Your reaction + the next question should be 2-3 sentences total. This is a conversation, not an essay.
+2. Keep everything SHORT. Your reaction + the next question should be 2-3 sentences total. This is a conversation, not an essay.
+3. When asking the next question, don't just read it verbatim. Rephrase it naturally to fit the conversation. Keep the meaning, change the words.
 
 CURRENT STATE:
 - Current question #{q['id']}: {current_q_text}
-- Already probed this question: {already_probed}
 - Next question #{next_q['id'] if next_q else 'done'}: {next_q_text}
 - Next question type: {next_q_type}
 - Next question tag: {next_q_tag}
 
-Respond as plain text. Structure: [short reaction to his answer] [transition] [next question naturally phrased]. If this is a probe, don't ask the next question — just ask the probe.
-
-At the very end of your response, on its own line, you MUST include one of:
-ACTION: ADVANCE  (you asked the next survey question — move forward)
-ACTION: PROBE  (you asked a follow-up to draw out a thin answer — stay on current question)
-
-If this is a choice question, put ACTION on one line, then CHOICES on the next line.
-These lines are invisible to the user.
+Respond as plain text. Just the reaction and the question. No markers, no JSON, no formatting.
+{action_instruction}
 {choice_instruction}
-
-Example good response: "Honestly, tracking all that in your head is impressive but probably stressful. When a customer says something nice, a bad review comes in, or a big catering order lands — what happens next?"
-Example probe: "Got it. Can you say more about what that looks like day to day?"
-Example with choices: "Makes sense. If I asked you right now how many catering orders you did last month — could you pull that up, or is it more of a rough guess?\\nCHOICES: I could find it exactly | Rough guess | No idea at all"
 {profile_section}"""
     )
 
@@ -419,7 +417,22 @@ async def chat(req: ChatRequest):
     import asyncio
     asyncio.create_task(_run_analysis(current_q_text, req.answer, req.session_id))
 
-    system_prompt = _build_system_prompt(sess)
+    # Decide BEFORE calling the AI: are we probing or advancing?
+    # This is deterministic — the AI doesn't decide, we do.
+    answer_word_count = len(req.answer.split())
+    is_short_answer = answer_word_count < 12
+
+    if sess["probe_count"] == 0 and is_short_answer and current_q["type"] == "text":
+        # Allow one probe — tell the AI to draw him out
+        should_probe = True
+        sess["probe_count"] = 1
+    else:
+        # Force advance — tell the AI to ask the next question
+        should_probe = False
+        sess["q_index"] += 1
+        sess["probe_count"] = 0
+
+    system_prompt = _build_system_prompt(sess, should_probe)
     messages = [{"role": "system", "content": system_prompt}]
     # Send last 12 messages for context (enough to remember recent answers
     # without bloating the prompt and slowing down the model)
@@ -509,37 +522,8 @@ async def chat(req: ChatRequest):
             yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
             return
 
-        # Parse action and choices from the response
-        clean_text, choices, action = _parse_response(full_response)
-
-        # Determine if AI advanced or probed
-        # Structural approach: check if the AI's response contains key words
-        # from the NEXT question (meaning it asked the next question)
-        next_q = QUESTIONS[sess["q_index"] + 1] if sess["q_index"] + 1 < len(QUESTIONS) else None
-
-        if next_q and action == "ADVANCE":
-            # AI said ADVANCE — but verify: does the response actually reference
-            # the next question's topic? If not, it was probably a probe and
-            # the AI forgot the marker.
-            next_keywords = [w.lower() for w in next_q["text"].split() if len(w) > 4]
-            response_lower = clean_text.lower()
-            keyword_hits = sum(1 for kw in next_keywords if kw in response_lower)
-            keyword_ratio = keyword_hits / max(len(next_keywords), 1)
-
-            if keyword_ratio < 0.15 and sess["probe_count"] == 0:
-                # AI said ADVANCE but didn't actually ask the next question —
-                # it probed instead. Keep on current question.
-                action = "PROBE"
-
-        if action == "ADVANCE":
-            sess["q_index"] += 1
-            sess["probe_count"] = 0
-        else:  # PROBE
-            sess["probe_count"] += 1
-            # Safety: after 2 probes, force advance
-            if sess["probe_count"] >= 2:
-                sess["q_index"] += 1
-                sess["probe_count"] = 0
+        # Parse choices from the response (action was already decided before the LLM call)
+        clean_text, choices, _ = _parse_response(full_response)
 
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
