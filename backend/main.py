@@ -334,6 +334,50 @@ async def _should_probe_llm(question_text: str, answer: str, already_probed: boo
         return False  # on error, just advance
 
 
+async def _verify_advance_llm(target_question: str, ai_response: str) -> bool:
+    """Ask a smarter model whether the AI response actually asks the target question."""
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            resp = await client.post(
+                f"{SPUR_API_BASE}/chat/completions",
+                json={
+                    "model": PROBE_MODEL,
+                    "messages": [
+                        {"role": "system", "content": (
+                            "You are a QA checker. You verify whether a survey AI actually asked "
+                            "the question it was supposed to ask. "
+                            "Reply with ONLY 'YES' or 'NO'. "
+                            "YES if the response asks about the same topic as the target question "
+                            "(even if rephrased). NO if the response is asking about something else "
+                            "(a different topic or a follow-up probe on a previous question)."
+                        )},
+                        {"role": "user", "content": (
+                            f"TARGET QUESTION: {target_question}\n\n"
+                            f"AI RESPONSE: {ai_response}\n\n"
+                            f"Does the AI response ask about the same topic as the target question?"
+                        )},
+                    ],
+                    "stream": False,
+                    "temperature": 0.1,
+                    "max_tokens": 800,
+                },
+                headers={
+                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                return True  # on error, assume advance (don't block the survey)
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if not content and msg.get("reasoning"):
+                content = msg["reasoning"]
+            return "YES" in content.upper()
+    except Exception:
+        return True  # on error, assume advance
+
+
 # ── System prompt builder (includes behavioral profile) ─────────
 def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, answered_q_text: str, target_q_index: int) -> str:
     # The target question is the one the AI should ask now.
@@ -584,26 +628,21 @@ async def chat(req: ChatRequest):
         clean_text, choices, _ = _parse_response(full_response)
 
         # Now update q_index based on what actually happened.
-        # If we told the AI to advance, check if it actually asked the target question.
+        # Use LLM QA check to verify the AI actually asked the target question.
         if not should_probe and target_q_index < len(QUESTIONS):
             target_q = QUESTIONS[target_q_index]
-            # Check if AI's response contains keywords from the target question
-            target_keywords = [w.lower() for w in target_q["text"].split() if len(w) > 4]
-            response_lower = clean_text.lower()
-            keyword_hits = sum(1 for kw in target_keywords if kw in response_lower)
-            keyword_ratio = keyword_hits / max(len(target_keywords), 1)
+            # Ask a smarter model: did the AI ask the target question?
+            advanced = await _verify_advance_llm(target_q["text"], clean_text)
 
-            if keyword_ratio >= 0.1:
+            if advanced:
                 # AI asked the target question — advance confirmed
                 sess["q_index"] = target_q_index
                 sess["probe_count"] = 0
             else:
                 # AI probed instead of advancing — stay on current question
-                # but increment probe_count. After 2 failed attempts to advance,
-                # force it — we'd rather skip a question than loop forever.
+                # but increment probe_count. After 3, force advance.
                 sess["probe_count"] += 1
                 if sess["probe_count"] >= 3:
-                    # Stuck — force advance to the target question
                     sess["q_index"] = target_q_index
                     sess["probe_count"] = 0
         elif not should_probe:
@@ -611,10 +650,9 @@ async def chat(req: ChatRequest):
             sess["q_index"] = target_q_index
             sess["probe_count"] = 0
         else:
-            # We told the AI to probe — q_index stays, probe_count already set
+            # We told the AI to probe — q_index stays
             sess["probe_count"] += 1
             if sess["probe_count"] >= 3:
-                # Too many probes — force advance
                 sess["q_index"] = min(sess["q_index"] + 1, len(QUESTIONS))
                 sess["probe_count"] = 0
 
