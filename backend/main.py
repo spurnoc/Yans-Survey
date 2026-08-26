@@ -68,8 +68,27 @@ def _get_db():
     if not TURSO_DB_URL:
         raise Exception("TURSO_DB_URL not set")
     _db_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
-    _db_conn.row_factory = libsql.Row
     return _db_conn
+
+
+def _row_to_dict(cursor, row) -> dict:
+    """Convert a row tuple to a dict using cursor column names."""
+    return {col[0]: row[i] for i, col in enumerate(cursor.description)}
+
+
+def _fetchone(conn, query, params=()) -> dict | None:
+    """Execute query and return one row as a dict, or None."""
+    cur = conn.execute(query, params)
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return _row_to_dict(cur, row)
+
+
+def _fetchall(conn, query, params=()) -> list[dict]:
+    """Execute query and return all rows as dicts."""
+    cur = conn.execute(query, params)
+    return [_row_to_dict(cur, row) for row in cur.fetchall()]
 
 
 def init_db():
@@ -95,9 +114,7 @@ def init_db():
 
 def _load_session(session_id: str) -> dict:
     conn = _get_db()
-    row = conn.execute(
-        "SELECT * FROM survey_sessions WHERE session_id=?", (session_id,)
-    ).fetchone()
+    row = _fetchone(conn, "SELECT * FROM survey_sessions WHERE session_id=?", (session_id,))
     if row:
         return {
             "session_id": session_id,
@@ -157,9 +174,7 @@ def _reset_session(session_id: str):
 
 def _load_profile(session_id: str) -> str:
     conn = _get_db()
-    row = conn.execute(
-        "SELECT profile FROM survey_profiles WHERE session_id=?", (session_id,)
-    ).fetchone()
+    row = _fetchone(conn, "SELECT profile FROM survey_profiles WHERE session_id=?", (session_id,))
     if row and row["profile"]:
         return row["profile"]
     return ""
@@ -531,9 +546,9 @@ async def get_profile(session_id: str):
 async def list_profiles():
     """List all profiles in the DB."""
     conn = _get_db()
-    rows = conn.execute(
+    rows = _fetchall(conn,
         "SELECT session_id, length(profile) as size, updated_at FROM survey_profiles WHERE profile != '' ORDER BY updated_at DESC"
-    ).fetchall()
+    )
     profiles = [{"session_id": r["session_id"], "size_bytes": r["size"], "modified": r["updated_at"]} for r in rows]
     return {"profiles": profiles}
 
