@@ -63,24 +63,15 @@ import libsql_experimental as libsql
 _db_conn = None
 
 def _get_db():
-    """Get a DB connection. For writes, use _get_write_db() instead."""
-    global _db_conn
-    if _db_conn is not None:
-        try:
-            _db_conn.execute("SELECT 1").fetchone()
-            return _db_conn
-        except Exception:
-            _db_conn = None
+    """Always create a fresh connection. The cached connection was showing
+    stale data — reads didn't see writes from a different connection."""
     if not TURSO_DB_URL:
         raise Exception("TURSO_DB_URL not set")
-    _db_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
-    return _db_conn
+    return libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
 
 
 def _get_write_db():
-    """Create a FRESH connection for writes. The cached connection
-    doesn't reliably persist to Turso — a new connection per write
-    ensures the data actually makes it to the remote database."""
+    """Same as _get_db — fresh connection for writes."""
     if not TURSO_DB_URL:
         raise Exception("TURSO_DB_URL not set")
     return libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
