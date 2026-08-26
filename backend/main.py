@@ -2,16 +2,15 @@
 SPUR Survey — Benji / Yans Deli conversational survey.
 
 Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
-- Per-browser sessions via session_id, persisted to SQLite (survives restarts)
+- Per-browser sessions via session_id, persisted to Turso (cloud SQLite)
 - AI generates dynamic multiple-choice options based on conversation context
-- Behavioral analysis runs after each answer, writes findings to /data/profiles/{session_id}.md
+- Behavioral analysis runs after each answer, stored in DB (not filesystem)
 - Findings are fed back into the system prompt so the AI adapts in real-time
 """
 from __future__ import annotations
 
-import os, json, time, sqlite3, re
+import os, json, time, re
 from typing import Optional
-from pathlib import Path
 from datetime import datetime, timezone
 
 import httpx
@@ -36,8 +35,8 @@ SPUR_API_BASE = os.getenv("SPUR_API_BASE", "https://ai.spuric.com/v1")
 SPUR_DEMO_API_KEY = os.getenv("SPUR_DEMO_API_KEY", "")
 SURVEY_MODEL = os.getenv("SURVEY_MODEL", "spur-chat-mini")
 ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-chat-mini")
-DB_PATH = os.getenv("DB_PATH", "/data/survey.db")
-PROFILES_DIR = os.getenv("PROFILES_DIR", "/data/profiles")
+TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 
 # ── The 13 questions (fixed order, AI adapts delivery and choices) ──
 QUESTIONS = [
@@ -57,13 +56,20 @@ QUESTIONS = [
 ]
 
 
-# ── SQLite persistence ────────────────────────────────────────────
-def _get_db() -> sqlite3.Connection:
-    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+# ── Turso (libsql) persistence ────────────────────────────────────
+import libsql_experimental as libsql
+
+_db_conn = None
+
+def _get_db():
+    global _db_conn
+    if _db_conn is not None:
+        return _db_conn
+    if not TURSO_DB_URL:
+        raise Exception("TURSO_DB_URL not set")
+    _db_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
+    _db_conn.row_factory = libsql.Row
+    return _db_conn
 
 
 def init_db():
@@ -77,78 +83,98 @@ def init_db():
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS survey_profiles (
+        session_id TEXT PRIMARY KEY,
+        profile TEXT DEFAULT '',
+        updated_at TEXT DEFAULT (datetime('now'))
+    );
     """)
     conn.commit()
-    conn.close()
 
 
 def _load_session(session_id: str) -> dict:
     conn = _get_db()
-    try:
-        row = conn.execute(
-            "SELECT * FROM survey_sessions WHERE session_id=?", (session_id,)
-        ).fetchone()
-        if row:
-            return {
-                "session_id": session_id,
-                "conversation": json.loads(row["conversation"]),
-                "q_index": row["q_index"],
-                "probe_count": row["probe_count"],
-            }
-        else:
-            conn.execute(
-                "INSERT INTO survey_sessions (session_id) VALUES (?)",
-                (session_id,),
-            )
-            conn.commit()
-            return {
-                "session_id": session_id,
-                "conversation": [],
-                "q_index": 0,
-                "probe_count": 0,
-            }
-    finally:
-        conn.close()
+    row = conn.execute(
+        "SELECT * FROM survey_sessions WHERE session_id=?", (session_id,)
+    ).fetchone()
+    if row:
+        return {
+            "session_id": session_id,
+            "conversation": json.loads(row["conversation"]),
+            "q_index": row["q_index"],
+            "probe_count": row["probe_count"],
+        }
+    else:
+        conn.execute(
+            "INSERT INTO survey_sessions (session_id) VALUES (?)",
+            (session_id,),
+        )
+        conn.commit()
+        return {
+            "session_id": session_id,
+            "conversation": [],
+            "q_index": 0,
+            "probe_count": 0,
+        }
 
 
 def _save_session(sess: dict):
     conn = _get_db()
-    try:
-        conn.execute("""
-            INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-            VALUES (?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(session_id) DO UPDATE SET
-                conversation=excluded.conversation,
-                q_index=excluded.q_index,
-                probe_count=excluded.probe_count,
-                updated_at=datetime('now')
-        """, (
-            sess["session_id"],
-            json.dumps(sess["conversation"]),
-            sess["q_index"],
-            sess["probe_count"],
-        ))
-        conn.commit()
-    finally:
-        conn.close()
+    conn.execute("""
+        INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(session_id) DO UPDATE SET
+            conversation=excluded.conversation,
+            q_index=excluded.q_index,
+            probe_count=excluded.probe_count,
+            updated_at=datetime('now')
+    """, (
+        sess["session_id"],
+        json.dumps(sess["conversation"]),
+        sess["q_index"],
+        sess["probe_count"],
+    ))
+    conn.commit()
 
 
 def _reset_session(session_id: str):
     conn = _get_db()
-    try:
-        conn.execute("""
-            INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-            VALUES (?, '[]', 0, 0, datetime('now'))
-            ON CONFLICT(session_id) DO UPDATE SET
-                conversation='[]', q_index=0, probe_count=0, updated_at=datetime('now')
-        """, (session_id,))
-        conn.commit()
-    finally:
-        conn.close()
-        # Also remove the profile file
-    profile_path = Path(PROFILES_DIR) / f"{session_id}.md"
-    if profile_path.exists():
-        profile_path.unlink()
+    conn.execute("""
+        INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+        VALUES (?, '[]', 0, 0, datetime('now'))
+        ON CONFLICT(session_id) DO UPDATE SET
+            conversation='[]', q_index=0, probe_count=0, updated_at=datetime('now')
+    """, (session_id,))
+    conn.execute("""
+        INSERT INTO survey_profiles (session_id, profile, updated_at)
+        VALUES (?, '', datetime('now'))
+        ON CONFLICT(session_id) DO UPDATE SET
+            profile='', updated_at=datetime('now')
+    """, (session_id,))
+    conn.commit()
+
+
+def _load_profile(session_id: str) -> str:
+    conn = _get_db()
+    row = conn.execute(
+        "SELECT profile FROM survey_profiles WHERE session_id=?", (session_id,)
+    ).fetchone()
+    if row and row["profile"]:
+        return row["profile"]
+    return ""
+
+
+def _save_profile(session_id: str, content: str):
+    conn = _get_db()
+    conn.execute("""
+        INSERT INTO survey_profiles (session_id, profile, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(session_id) DO UPDATE SET
+            profile=excluded.profile,
+            updated_at=datetime('now')
+    """, (session_id, content))
+    conn.commit()
 
 
 def _get_state(sess: dict) -> dict:
@@ -167,26 +193,7 @@ class ChatRequest(BaseModel):
 
 
 # ── Profile / behavioral analysis ─────────────────────────────────
-def _profile_path(session_id: str) -> Path:
-    d = Path(PROFILES_DIR)
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{session_id}.md"
-
-
-def _load_profile(session_id: str) -> str:
-    p = _profile_path(session_id)
-    if p.exists():
-        return p.read_text(encoding="utf-8")
-    return ""
-
-
-def _save_profile(session_id: str, content: str):
-    p = _profile_path(session_id)
-    p.write_text(content, encoding="utf-8")
-
-
 def _build_analysis_prompt(question_text: str, answer: str, existing_profile: str) -> list[dict]:
-    """Build messages for the behavioral analysis LLM call."""
     sys_msg = (
         "You are a behavioral analyst. You analyze survey responses to build a running "
         "profile of the respondent — how they learn, how they perceive things, and how they function. "
@@ -228,7 +235,7 @@ def _build_analysis_prompt(question_text: str, answer: str, existing_profile: st
 
 
 async def _run_analysis(question_text: str, answer: str, session_id: str):
-    """Run behavioral analysis and save to .md file. Non-blocking on errors."""
+    """Run behavioral analysis and save to DB. Best-effort, non-blocking."""
     try:
         existing = _load_profile(session_id)
         messages = _build_analysis_prompt(question_text, answer, existing)
@@ -260,7 +267,7 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
         pass  # analysis is best-effort, don't block the survey
 
 
-# ── System prompt builder (now includes behavioral profile) ───────
+# ── System prompt builder (includes behavioral profile) ─────────
 def _build_system_prompt(sess: dict) -> str:
     q = QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None
     next_q = QUESTIONS[sess["q_index"] + 1] if sess["q_index"] + 1 < len(QUESTIONS) else None
@@ -333,16 +340,13 @@ Example with choices: "Makes sense. If I asked you right now how many catering o
 
 def _parse_choices(text: str) -> tuple[str, list[str]]:
     """Extract CHOICES marker from AI response. Returns (clean_text, choices_list)."""
-    # Match "CHOICES:" anywhere, case-insensitive, grab the rest of that line
     match = re.search(r'CHOICES:\s*(.+)', text, re.IGNORECASE)
     if not match:
         return text.strip(), []
 
     choices_str = match.group(1).strip()
     choices = [c.strip() for c in choices_str.split('|') if c.strip()]
-    # Remove the CHOICES line from the visible text
     clean_text = text[:match.start()].strip()
-    # Also strip any trailing newlines left behind
     clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
     return clean_text, choices
 
@@ -361,7 +365,6 @@ async def chat(req: ChatRequest):
     sess["conversation"].append({"role": "user", "content": req.answer})
 
     # Fire behavioral analysis in the background — don't block the survey.
-    # The profile will be ready by the time the NEXT answer comes in.
     import asyncio
     asyncio.create_task(_run_analysis(current_q_text, req.answer, req.session_id))
 
@@ -378,17 +381,11 @@ async def chat(req: ChatRequest):
         messages.insert(1, {"role": "assistant", "content": first_q["text"]})
 
     async def sse_stream():
-        # Real streaming — tokens appear as the model generates them.
-        # For reasoning models, delta.content may be null while delta.reasoning
-        # is being emitted. We skip reasoning tokens and only stream content,
-        # but if the model finishes reasoning and there's no content (edge case),
-        # we fall back to a non-streaming retry.
+        full_response = ""
 
         if not SPUR_DEMO_API_KEY:
             yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
             return
-
-        full_response = ""
 
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
@@ -482,7 +479,7 @@ async def chat(req: ChatRequest):
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
 
-        # Save to SQLite
+        # Save to Turso
         _save_session(sess)
 
         state = _get_state(sess)
@@ -520,30 +517,24 @@ async def get_questions():
     return {"questions": QUESTIONS}
 
 
-# ── Profile endpoint — returns the .md file ──────────────────────
+# ── Profile endpoint — returns the .md content from DB ───────────
 @app.get("/api/survey/profile/{session_id}")
 async def get_profile(session_id: str):
     """Return the behavioral profile as markdown text."""
     profile = _load_profile(session_id)
     if not profile:
-        return JSONResponse({"profile": None, "message": "No profile yet — the respondent hasn't answered any questions."})
+        return JSONResponse({"profile": None, "message": "No profile yet."})
     return PlainTextResponse(profile, media_type="text/markdown")
 
 
 @app.get("/api/survey/profiles")
 async def list_profiles():
-    """List all profile files available."""
-    d = Path(PROFILES_DIR)
-    if not d.exists():
-        return {"profiles": []}
-    profiles = []
-    for f in sorted(d.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True):
-        stat = f.stat()
-        profiles.append({
-            "session_id": f.stem,
-            "size_bytes": stat.st_size,
-            "modified": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        })
+    """List all profiles in the DB."""
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT session_id, length(profile) as size, updated_at FROM survey_profiles WHERE profile != '' ORDER BY updated_at DESC"
+    ).fetchall()
+    profiles = [{"session_id": r["session_id"], "size_bytes": r["size"], "modified": r["updated_at"]} for r in rows]
     return {"profiles": profiles}
 
 
@@ -553,13 +544,13 @@ async def health():
         "status": "ok",
         "service": "survey",
         "has_api_key": bool(SPUR_DEMO_API_KEY),
+        "has_db": bool(TURSO_DB_URL),
     }
 
 
 @app.on_event("startup")
 async def _startup():
     init_db()
-    Path(PROFILES_DIR).mkdir(parents=True, exist_ok=True)
 
 
 # Serve frontend
