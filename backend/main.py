@@ -360,11 +360,12 @@ CRITICAL RULES:
 1. You are NOT a robot. React to what he says. "Got it." "That makes sense." "Honestly, that's smart." Be real but brief — one short sentence max.
 2. Keep everything SHORT. Your reaction + the next question should be 2-3 sentences total. This is a conversation, not an essay.
 3. When asking the next question, don't just read it verbatim. Rephrase it naturally to fit the conversation. Keep the meaning, change the words.
+4. NEVER repeat a question you've already asked. Look at the conversation history — if you already asked about something, move on to the NEXT question.
 
 CURRENT STATE:
 - Just answered question #{answered_q_id}: {answered_q_text}
-- Next question #{target_q_id}: {target_q_text}
-- Next question type: {target_q_type}
+- You must now ask question #{target_q_id}: {target_q_text}
+- Question type: {target_q_type}
 
 Respond as plain text. Just the reaction and the question. No markers, no JSON, no formatting.
 {action_instruction}
@@ -423,17 +424,21 @@ async def chat(req: ChatRequest):
     # Decide BEFORE calling the AI: are we probing or advancing?
     # This is deterministic — the AI doesn't decide, we do.
     answer_word_count = len(req.answer.split())
-    is_short_answer = answer_word_count < 12
 
     answered_q_id = current_q["id"]
     answered_q_text = current_q_text
 
-    if sess["probe_count"] == 0 and is_short_answer and current_q["type"] == "text":
-        # Probe: stay on the same question
+    if sess["probe_count"] == 0 and answer_word_count < 8 and current_q["type"] == "text":
+        # Probe: answer is very short (under 8 words), draw him out
         should_probe = True
         sess["probe_count"] = 1
+    elif sess["probe_count"] > 0:
+        # Already probed — always advance, even if still short
+        should_probe = False
+        sess["q_index"] += 1
+        sess["probe_count"] = 0
     else:
-        # Advance: move to the next question
+        # First answer, long enough — advance
         should_probe = False
         sess["q_index"] += 1
         sess["probe_count"] = 0
