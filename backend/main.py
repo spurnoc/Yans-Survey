@@ -67,9 +67,11 @@ def _turso_url():
 
 def _turso_execute(sql: str, args: list = None):
     """Execute a SQL statement via the Turso HTTP API."""
-    body = {"requests": [{"type": "execute", "stmt": {"sql": sql}}]}
+    stmt = {"sql": sql}
     if args:
-        body["requests"][0]["stmt"]["args"] = args
+        # Turso v2 API expects args as simple strings, not typed objects
+        stmt["args"] = [str(a["value"]) for a in args]
+    body = {"requests": [{"type": "execute", "stmt": stmt}]}
     resp = httpx.post(
         _turso_url(),
         json=body,
@@ -86,9 +88,10 @@ def _turso_execute(sql: str, args: list = None):
 
 def _turso_query(sql: str, args: list = None) -> list[dict]:
     """Execute a SELECT and return rows as dicts."""
-    body = {"requests": [{"type": "execute", "stmt": {"sql": sql}}]}
+    stmt = {"sql": sql}
     if args:
-        body["requests"][0]["stmt"]["args"] = args
+        stmt["args"] = [str(a["value"]) for a in args]
+    body = {"requests": [{"type": "execute", "stmt": stmt}]}
     resp = httpx.post(
         _turso_url(),
         json=body,
@@ -107,11 +110,20 @@ def _turso_query(sql: str, args: list = None) -> list[dict]:
     result = results[0]
     if "error" in result:
         raise Exception(f"Turso SQL error: {result['error']['message']}")
-    rows_raw = result.get("response", {}).get("result", {}).get("rows", [])
-    cols = [c["name"] for c in result.get("response", {}).get("result", {}).get("cols", [])]
+    resp_data = result.get("response", {}).get("result", {})
+    rows_raw = resp_data.get("rows", [])
+    cols = [c["name"] for c in resp_data.get("cols", [])]
     rows = []
     for row in rows_raw:
-        values = [v.get("value") if isinstance(v, dict) else v for v in row]
+        values = []
+        for v in row:
+            if isinstance(v, dict):
+                values.append(v.get("value"))
+            elif isinstance(v, (int, float)):
+                # Turso returns numbers as strings — convert back
+                values.append(int(v) if isinstance(v, int) else v)
+            else:
+                values.append(v)
         rows.append(dict(zip(cols, values)))
     return rows
 
