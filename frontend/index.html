@@ -505,8 +505,8 @@ async function submitAnswer(answer) {
       }
     }
 
-    // Strip CHOICES marker
-    const finalText = fullText.replace(/\n*CHOICES:.*$/is, '').trim();
+    // Strip CHOICES and ACTION markers
+    const finalText = fullText.replace(/\n*CHOICES:.*$/is, '').replace(/\n*ACTION:.*$/is, '').replace(/\n{3,}/g, '\n\n').trim();
 
     // Typewriter reveal: dots already showing, now type out the text
     aiBubble.innerHTML = '<span class="stream-cursor"></span>';

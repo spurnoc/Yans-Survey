@@ -310,12 +310,17 @@ def _build_system_prompt(sess: dict) -> str:
             "IMPORTANT: Do NOT say the choices out loud in your response. Just ask the question naturally — "
             "the user will see tappable buttons for the choices. Your response should be just the reaction + "
             "the question, nothing else.\n"
-            "After your response text, on a SEPARATE line at the very end, put ONLY:\n"
+            "After your response text, on SEPARATE lines at the very end, put ONLY:\n"
+            "ACTION: ADVANCE\n"
             "CHOICES: [option 1] | [option 2] | [option 3]\n"
-            "This line is invisible to the user — it only tells the frontend what buttons to render."
+            "These lines are invisible to the user."
         )
     else:
-        choice_instruction = ""
+        choice_instruction = (
+            "\nAfter your response text, on a SEPARATE line at the very end, put ONLY:\n"
+            "ACTION: ADVANCE\n"
+            "This line is invisible to the user."
+        )
 
     # Load behavioral profile if it exists
     profile = _load_profile(sess["session_id"])
@@ -344,6 +349,13 @@ CURRENT STATE:
 - Next question tag: {next_q_tag}
 
 Respond as plain text. Structure: [short reaction to his answer] [transition] [next question naturally phrased]. If this is a probe, don't ask the next question — just ask the probe.
+
+At the very end of your response, on its own line, you MUST include one of:
+ACTION: ADVANCE  (you asked the next survey question — move forward)
+ACTION: PROBE  (you asked a follow-up to draw out a thin answer — stay on current question)
+
+If this is a choice question, put ACTION on one line, then CHOICES on the next line.
+These lines are invisible to the user.
 {choice_instruction}
 
 Example good response: "Honestly, tracking all that in your head is impressive but probably stressful. When a customer says something nice, a bad review comes in, or a big catering order lands — what happens next?"
@@ -353,17 +365,30 @@ Example with choices: "Makes sense. If I asked you right now how many catering o
     )
 
 
-def _parse_choices(text: str) -> tuple[str, list[str]]:
-    """Extract CHOICES marker from AI response. Returns (clean_text, choices_list)."""
-    match = re.search(r'CHOICES:\s*(.+)', text, re.IGNORECASE)
-    if not match:
-        return text.strip(), []
+def _parse_response(text: str) -> tuple[str, list[str], str]:
+    """Extract ACTION and CHOICES markers from AI response.
+    Returns (clean_text, choices_list, action) where action is 'ADVANCE' or 'PROBE'.
+    """
+    action = "ADVANCE"  # default
+    choices = []
 
-    choices_str = match.group(1).strip()
-    choices = [c.strip() for c in choices_str.split('|') if c.strip()]
-    clean_text = text[:match.start()].strip()
-    clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
-    return clean_text, choices
+    # Extract ACTION
+    action_match = re.search(r'ACTION:\s*(ADVANCE|PROBE)', text, re.IGNORECASE)
+    if action_match:
+        action = action_match.group(1).upper()
+
+    # Extract CHOICES
+    choices_match = re.search(r'CHOICES:\s*(.+)', text, re.IGNORECASE)
+    if choices_match:
+        choices_str = choices_match.group(1).strip()
+        choices = [c.strip() for c in choices_str.split('|') if c.strip()]
+
+    # Strip all markers from visible text
+    clean_text = re.sub(r'ACTION:\s*\w+', '', text, flags=re.IGNORECASE)
+    clean_text = re.sub(r'CHOICES:\s*.+', '', clean_text, flags=re.IGNORECASE)
+    clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
+
+    return clean_text, choices, action
 
 
 @app.post("/api/survey/chat")
@@ -470,26 +495,19 @@ async def chat(req: ChatRequest):
             yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
             return
 
-        # Parse choices from the response
-        clean_text, choices = _parse_choices(full_response)
-        if not choices:
-            choices = []
+        # Parse action and choices from the response
+        clean_text, choices, action = _parse_response(full_response)
 
-        # Determine if AI advanced or probed
-        next_q = QUESTIONS[sess["q_index"] + 1] if sess["q_index"] + 1 < len(QUESTIONS) else None
-
-        if next_q:
-            next_words = set(next_q["text"].lower().split())
-            response_words = set(clean_text.lower().split())
-            overlap = len(next_words & response_words) / max(len(next_words), 1)
-
-            if overlap > 0.3 or sess["probe_count"] >= 1:
+        # Advance or probe based on AI's explicit signal
+        if action == "ADVANCE":
+            sess["q_index"] += 1
+            sess["probe_count"] = 0
+        else:  # PROBE
+            sess["probe_count"] += 1
+            # Safety: after 2 probes, force advance
+            if sess["probe_count"] >= 2:
                 sess["q_index"] += 1
                 sess["probe_count"] = 0
-            else:
-                sess["probe_count"] += 1
-        else:
-            sess["q_index"] += 1
 
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
