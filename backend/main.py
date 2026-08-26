@@ -655,20 +655,17 @@ async def chat(req: ChatRequest):
             else:
                 # AI just reacted (or already probed) — append the question and advance
                 target_q = QUESTIONS[target_q_index]
+                
+                # Build the question text to append
                 if target_q["type"] == "choice":
-                    # Generate choices for choice questions
-                    # We'll ask the AI to generate choices separately, or use the question as-is
-                    clean_text = clean_text + "\n\n" + target_q["text"]
-                    # Try to get choices from the AI response, or generate simple ones
-                    if not choices:
-                        # No choices from AI — we'll need to handle this
-                        # For now, just append the question without choices
-                        pass
+                    question_text = "\n\n" + target_q["text"]
                 else:
-                    # Text question — just append the question text
-                    if not clean_text.endswith("."):
-                        clean_text += "."
-                    clean_text = clean_text + " " + target_q["text"]
+                    separator = " " if clean_text.endswith(".") else ". "
+                    question_text = separator + target_q["text"]
+                
+                # Stream the question text to the frontend
+                yield f"data: {json.dumps({'content': question_text})}\n\n"
+                clean_text = clean_text + question_text
 
                 sess["q_index"] = target_q_index
                 sess["probe_count"] = 0
