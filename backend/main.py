@@ -35,6 +35,7 @@ SPUR_API_BASE = os.getenv("SPUR_API_BASE", "https://ai.spuric.com/v1")
 SPUR_DEMO_API_KEY = os.getenv("SPUR_DEMO_API_KEY", "")
 SURVEY_MODEL = os.getenv("SURVEY_MODEL", "spur-glm-air")
 ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-glm-air")
+PROBE_MODEL = os.getenv("PROBE_MODEL", "spur-glm-5-2")
 TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 
@@ -287,6 +288,52 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
         pass  # analysis is best-effort, don't block the survey
 
 
+async def _should_probe_llm(question_text: str, answer: str, already_probed: bool) -> bool:
+    """Ask a smarter model whether this answer needs a follow-up probe."""
+    if already_probed:
+        return False  # never probe twice
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"{SPUR_API_BASE}/chat/completions",
+                json={
+                    "model": PROBE_MODEL,
+                    "messages": [
+                        {"role": "system", "content": (
+                            "You judge whether a survey answer is substantive enough to move on, "
+                            "or too thin/vague and needs a follow-up. "
+                            "Reply with ONLY 'PROBE' or 'ADVANCE'. "
+                            "PROBE if the answer is vague, evasive, or missing key detail. "
+                            "ADVANCE if the answer actually addresses the question, even if brief."
+                        )},
+                        {"role": "user", "content": (
+                            f"QUESTION: {question_text}\n"
+                            f"ANSWER: {answer}\n"
+                            f"Already probed: {already_probed}\n"
+                            f"Decide: PROBE or ADVANCE?"
+                        )},
+                    ],
+                    "stream": False,
+                    "temperature": 0.1,
+                    "max_tokens": 10,
+                },
+                headers={
+                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                return False
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if not content and msg.get("reasoning"):
+                content = msg["reasoning"]
+            return "PROBE" in content.upper()
+    except Exception:
+        return False  # on error, just advance
+
+
 # ── System prompt builder (includes behavioral profile) ─────────
 def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, answered_q_text: str) -> str:
     # The target question is the one the AI should ask now.
@@ -421,25 +468,15 @@ async def chat(req: ChatRequest):
     import asyncio
     asyncio.create_task(_run_analysis(current_q_text, req.answer, req.session_id))
 
-    # Decide BEFORE calling the AI: are we probing or advancing?
-    # This is deterministic — the AI doesn't decide, we do.
-    answer_word_count = len(req.answer.split())
+    # Ask a smarter model whether this answer needs a probe
+    should_probe = await _should_probe_llm(current_q_text, req.answer, sess["probe_count"] > 0)
 
     answered_q_id = current_q["id"]
     answered_q_text = current_q_text
 
-    if sess["probe_count"] == 0 and answer_word_count < 8 and current_q["type"] == "text":
-        # Probe: answer is very short (under 8 words), draw him out
-        should_probe = True
+    if should_probe:
         sess["probe_count"] = 1
-    elif sess["probe_count"] > 0:
-        # Already probed — always advance, even if still short
-        should_probe = False
-        sess["q_index"] += 1
-        sess["probe_count"] = 0
     else:
-        # First answer, long enough — advance
-        should_probe = False
         sess["q_index"] += 1
         sess["probe_count"] = 0
 
