@@ -525,16 +525,17 @@ async def chat(req: ChatRequest):
     answered_q_text = current_q_text
 
     # Determine the target question (what the AI should ask next)
-    # If already probed once, we still target the same question but
-    # the injected message will be more forceful about asking it.
     target_q_index = sess["q_index"] + 1  # always aim for the next question
-    should_probe = False  # let the AI decide naturally
+    should_probe = False
 
     # Build the prompt with the target question
     system_prompt = _build_system_prompt(sess, should_probe, answered_q_id, answered_q_text, target_q_index)
     messages = [{"role": "system", "content": system_prompt}]
-    # Send the FULL conversation for context
-    for msg in sess["conversation"]:
+
+    # Send ONLY the last 4 messages for context — too much history makes
+    # the AI follow the conversation pattern instead of instructions
+    recent = sess["conversation"][-4:]
+    for msg in recent:
         if msg["role"] == "user":
             messages.append({"role": "user", "content": msg["content"]})
         else:
@@ -545,26 +546,22 @@ async def chat(req: ChatRequest):
         first_q = QUESTIONS[0]
         messages.insert(1, {"role": "assistant", "content": first_q["text"]})
 
-    # INJECT the exact question as a final user message so the AI can't ignore it.
-    # The AI can choose to probe first (adaptive), but after 1 probe it must ask the question.
+    # Instead of asking the AI to ask the question (it ignores instructions),
+    # ask the AI to ONLY generate a short reaction to the answer.
+    # The backend will append the actual question itself.
     if target_q_index < len(QUESTIONS):
         target_q = QUESTIONS[target_q_index]
         if sess["probe_count"] > 0:
-            # Already probed — be forceful, must ask the question now
+            # Already probed — force the question, AI just reacts
             messages.append({"role": "user", "content": (
-                f"[SYSTEM — do not repeat this message to the user]\n"
-                f"You already asked a follow-up on the previous question. Now you MUST move on.\n"
-                f"Ask this question now: \"{target_q['text']}\"\n"
-                f"React briefly to his answer, then ask this question. Do NOT probe again."
+                f"React to my answer in one short sentence. Do NOT ask any question."
             )})
         else:
-            # First time — let the AI probe if the answer is thin, or ask the question
+            # First time — let AI probe if answer is thin, or just react
             messages.append({"role": "user", "content": (
-                f"[SYSTEM — do not repeat this message to the user]\n"
-                f"Your next survey question to ask is: \"{target_q['text']}\"\n"
-                f"React briefly to his answer first. If his answer was too thin or vague, you may\n"
-                f"ask ONE follow-up probe instead. Otherwise, ask this question now.\n"
-                f"Rephrase it naturally — do not read it verbatim."
+                f"React to my answer in one short sentence. "
+                f"If my answer was too thin or vague, you may ask ONE follow-up question. "
+                f"Otherwise, just react — do NOT ask the next survey question yet."
             )})
 
     async def sse_stream():
@@ -645,24 +642,36 @@ async def chat(req: ChatRequest):
         # Parse choices from the response
         clean_text, choices, _ = _parse_response(full_response)
 
-        # Use QA check to determine if the AI advanced or probed
+        # The AI was asked to ONLY react (or probe). 
+        # Check if it probed (asked a question) or just reacted (no question).
         if target_q_index < len(QUESTIONS):
-            advanced = await _verify_advance_llm(QUESTIONS[target_q_index]["text"], clean_text)
+            # Did the AI ask a question? (ends with ? or contains question words)
+            ai_probed = "?" in clean_text and len(clean_text) < 200
 
-            if advanced:
-                # AI asked the target question — advance confirmed
+            if ai_probed and sess["probe_count"] == 0:
+                # AI probed — stay on current question
+                sess["probe_count"] = 1
+                # q_index stays
+            else:
+                # AI just reacted (or already probed) — append the question and advance
+                target_q = QUESTIONS[target_q_index]
+                if target_q["type"] == "choice":
+                    # Generate choices for choice questions
+                    # We'll ask the AI to generate choices separately, or use the question as-is
+                    clean_text = clean_text + "\n\n" + target_q["text"]
+                    # Try to get choices from the AI response, or generate simple ones
+                    if not choices:
+                        # No choices from AI — we'll need to handle this
+                        # For now, just append the question without choices
+                        pass
+                else:
+                    # Text question — just append the question text
+                    if not clean_text.endswith("."):
+                        clean_text += "."
+                    clean_text = clean_text + " " + target_q["text"]
+
                 sess["q_index"] = target_q_index
                 sess["probe_count"] = 0
-            else:
-                # AI probed instead of asking the target question
-                if sess["probe_count"] > 0:
-                    # Already probed once — force advance to prevent loops
-                    sess["q_index"] = target_q_index
-                    sess["probe_count"] = 0
-                else:
-                    # First probe — allow it, stay on current question
-                    sess["probe_count"] = 1
-                    # q_index stays where it is
         else:
             # Survey complete
             sess["q_index"] = target_q_index
