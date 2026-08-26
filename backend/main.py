@@ -144,20 +144,28 @@ def _load_session(session_id: str) -> dict:
 
 def _save_session(sess: dict):
     conn = _get_db()
-    conn.execute("""
-        INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(session_id) DO UPDATE SET
-            conversation=excluded.conversation,
-            q_index=excluded.q_index,
-            probe_count=excluded.probe_count,
-            updated_at=datetime('now')
+    # Use a simple approach: try UPDATE first, then INSERT if no rows affected
+    cur = conn.execute("""
+        UPDATE survey_sessions 
+        SET conversation=?, q_index=?, probe_count=?, updated_at=datetime('now')
+        WHERE session_id=?
     """, (
-        sess["session_id"],
         json.dumps(sess["conversation"]),
         sess["q_index"],
         sess["probe_count"],
+        sess["session_id"],
     ))
+    if cur.rowcount == 0:
+        # Row doesn't exist — insert it
+        conn.execute("""
+            INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+            VALUES (?, ?, ?, ?, datetime('now'))
+        """, (
+            sess["session_id"],
+            json.dumps(sess["conversation"]),
+            sess["q_index"],
+            sess["probe_count"],
+        ))
     conn.commit()
 
 
@@ -643,8 +651,12 @@ async def chat(req: ChatRequest):
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
 
-        # Save to Turso
-        _save_session(sess)
+        # Save to Turso — wrap in try/except so we can see if it fails
+        try:
+            _save_session(sess)
+        except Exception as save_err:
+            # Send the error through the stream so we can debug
+            yield f"data: {json.dumps({'error': f'Save failed: {str(save_err)[:200]}'})}\n\n"
 
         state = _get_state(sess)
         yield f"data: {json.dumps({'state': state, 'choices': choices, 'done': sess['q_index'] >= len(QUESTIONS)})}\n\n"
