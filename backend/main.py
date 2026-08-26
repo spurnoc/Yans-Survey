@@ -153,52 +153,29 @@ def _load_session(session_id: str) -> dict:
 
 def _save_session(sess: dict):
     conn = _get_write_db()
-    # Use a simple approach: try UPDATE first, then INSERT if no rows affected
-    cur = conn.execute("""
-        UPDATE survey_sessions 
-        SET conversation=?, q_index=?, probe_count=?, updated_at=datetime('now')
-        WHERE session_id=?
+    conn.execute("""
+        INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+        VALUES (?, ?, ?, ?, datetime('now'))
     """, (
+        sess["session_id"],
         json.dumps(sess["conversation"]),
         sess["q_index"],
         sess["probe_count"],
-        sess["session_id"],
     ))
-    if cur.rowcount == 0:
-        conn.execute("""
-            INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-            VALUES (?, ?, ?, ?, datetime('now'))
-        """, (
-            sess["session_id"],
-            json.dumps(sess["conversation"]),
-            sess["q_index"],
-            sess["probe_count"],
-        ))
     conn.commit()
     conn.close()
 
 
 def _reset_session(session_id: str):
     conn = _get_write_db()
-    cur = conn.execute("""
-        UPDATE survey_sessions 
-        SET conversation='[]', q_index=0, probe_count=0, updated_at=datetime('now')
-        WHERE session_id=?
+    conn.execute("""
+        INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+        VALUES (?, '[]', 0, 0, datetime('now'))
     """, (session_id,))
-    if cur.rowcount == 0:
-        conn.execute("""
-            INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-            VALUES (?, '[]', 0, 0, datetime('now'))
-        """, (session_id,))
-    cur2 = conn.execute("""
-        UPDATE survey_profiles SET profile='', updated_at=datetime('now')
-        WHERE session_id=?
+    conn.execute("""
+        INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
+        VALUES (?, '', datetime('now'))
     """, (session_id,))
-    if cur2.rowcount == 0:
-        conn.execute("""
-            INSERT INTO survey_profiles (session_id, profile, updated_at)
-            VALUES (?, '', datetime('now'))
-        """, (session_id,))
     conn.commit()
     conn.close()
 
@@ -213,15 +190,10 @@ def _load_profile(session_id: str) -> str:
 
 def _save_profile(session_id: str, content: str):
     conn = _get_write_db()
-    cur = conn.execute("""
-        UPDATE survey_profiles SET profile=?, updated_at=datetime('now')
-        WHERE session_id=?
-    """, (content, session_id))
-    if cur.rowcount == 0:
-        conn.execute("""
-            INSERT INTO survey_profiles (session_id, profile, updated_at)
-            VALUES (?, ?, datetime('now'))
-        """, (session_id, content))
+    conn.execute("""
+        INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
+        VALUES (?, ?, datetime('now'))
+    """, (session_id, content))
     conn.commit()
     conn.close()
 
