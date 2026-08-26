@@ -38,6 +38,13 @@ ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-glm-air")
 TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 
+# Email settings
+SMTP_HOST = os.getenv("SMTP_HOST", "mail.spuric.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "noc@spuric.com")
+SMTP_PASS = os.getenv("SMTP_PASS", "")
+EMAIL_TO = os.getenv("EMAIL_TO", "akif@spuric.com")
+
 # ── The 13 questions (fixed order, AI adapts delivery and choices) ──
 QUESTIONS = [
     {"id": 1, "text": "Right now, how do you keep track of all this? Reviews, money, marketing.", "type": "text", "tag": "tracking"},
@@ -315,6 +322,49 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
         pass  # analysis is best-effort, don't block the survey
 
 
+# ── Email transcript on survey completion ───────────────────────
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+
+def _send_transcript_email(sess: dict):
+    """Send the survey transcript to akif@spuric.com. Best-effort."""
+    try:
+        conv = sess["conversation"]
+        # Build readable transcript
+        lines = ["YANS DELI SURVEY — TRANSCRIPT", "=" * 40, ""]
+        for msg in conv:
+            if msg["role"] == "assistant":
+                lines.append(f"AI: {msg['content']}")
+            else:
+                lines.append(f"Benji: {msg['content']}")
+            lines.append("")
+
+        # Attach behavioral profile if exists
+        profile = _load_profile(sess["session_id"])
+        if profile:
+            lines.append("=" * 40)
+            lines.append("BEHAVIORAL PROFILE")
+            lines.append("=" * 40)
+            lines.append(profile)
+
+        transcript_text = "\n".join(lines)
+
+        msg = MIMEMultipart()
+        msg["From"] = SMTP_USER
+        msg["To"] = EMAIL_TO
+        msg["Subject"] = f"Yans Deli Survey — Session Complete ({sess['session_id'][:12]})"
+
+        msg.attach(MIMEText(transcript_text, "plain"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(SMTP_USER, [EMAIL_TO], msg.as_string())
+    except Exception:
+        pass  # best-effort — don't break the survey
+
+
 # ── System prompt builder ────────────────────────────────────────
 def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: str, target_q_index: int) -> str:
     target_q = QUESTIONS[target_q_index] if target_q_index < len(QUESTIONS) else None
@@ -532,7 +582,16 @@ async def chat(req: ChatRequest):
             yield f"data: {json.dumps({'error': f'Save failed: {str(save_err)[:200]}'})}\n\n"
 
         state = _get_state(sess)
-        yield f"data: {json.dumps({'state': state, 'choices': choices, 'done': sess['q_index'] >= len(QUESTIONS)})}\n\n"
+        is_done = sess['q_index'] >= len(QUESTIONS)
+        yield f"data: {json.dumps({'state': state, 'choices': choices, 'done': is_done})}\n\n"
+
+        # Send transcript email when survey completes
+        if is_done:
+            try:
+                _send_transcript_email(sess)
+            except Exception:
+                pass  # best-effort
+
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
