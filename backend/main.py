@@ -546,15 +546,15 @@ async def chat(req: ChatRequest):
         first_q = QUESTIONS[0]
         messages.insert(1, {"role": "assistant", "content": first_q["text"]})
 
-    # AI generates ONLY a reaction. Backend always appends the actual question.
-    # The AI can ask a clarifying question in its reaction if the answer was thin.
-    # The real next question always gets appended by the backend after.
-    # This means: every answer ALWAYS advances. No loops possible.
+    # AI generates a reaction AND rephrases the next question.
+    # Backend streams whatever the AI produces — no appending needed.
+    # The AI sees the exact question text and is told to rephrase it naturally.
     if target_q_index < len(QUESTIONS):
+        target_q = QUESTIONS[target_q_index]
         messages.append({"role": "user", "content": (
-            f"React to my answer in one short sentence. "
-            f"If my answer was thin or vague, ask ONE clarifying question. "
-            f"Otherwise just react. Do NOT ask the next survey question — the system handles that."
+            f"React to my answer in one short sentence, then ask me this survey question "
+            f"(rephrase it naturally to fit our conversation — keep the meaning, change the words):\n"
+            f"\"{target_q['text']}\""
         )})
 
     async def sse_stream():
@@ -635,27 +635,10 @@ async def chat(req: ChatRequest):
         # Parse choices from the response
         clean_text, choices, _ = _parse_response(full_response)
 
-        # ALWAYS append the target question and advance.
-        # The AI generated only a reaction (maybe with a clarifying question).
-        # The backend appends the actual next question — no probe detection needed.
-        if target_q_index < len(QUESTIONS):
-            target_q = QUESTIONS[target_q_index]
-            if target_q["type"] == "choice":
-                question_text = "\n\n" + target_q["text"]
-            else:
-                separator = " " if clean_text.endswith(".") else ". "
-                question_text = separator + target_q["text"]
-
-            # Stream the question text to the frontend
-            yield f"data: {json.dumps({'content': question_text})}\n\n"
-            clean_text = clean_text + question_text
-
-            sess["q_index"] = target_q_index
-            sess["probe_count"] = 0
-        else:
-            # Survey complete
-            sess["q_index"] = target_q_index
-            sess["probe_count"] = 0
+        # ALWAYS advance — the AI generated the reaction + rephrased question.
+        # No probe detection, no appending. Just advance.
+        sess["q_index"] = target_q_index
+        sess["probe_count"] = 0
 
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
