@@ -63,18 +63,27 @@ import libsql_experimental as libsql
 _db_conn = None
 
 def _get_db():
+    """Get a DB connection. For writes, use _get_write_db() instead."""
     global _db_conn
     if _db_conn is not None:
-        # Test the connection is still alive with a cheap query
         try:
             _db_conn.execute("SELECT 1").fetchone()
             return _db_conn
         except Exception:
-            _db_conn = None  # dead, recreate
+            _db_conn = None
     if not TURSO_DB_URL:
         raise Exception("TURSO_DB_URL not set")
     _db_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
     return _db_conn
+
+
+def _get_write_db():
+    """Create a FRESH connection for writes. The cached connection
+    doesn't reliably persist to Turso — a new connection per write
+    ensures the data actually makes it to the remote database."""
+    if not TURSO_DB_URL:
+        raise Exception("TURSO_DB_URL not set")
+    return libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
 
 
 def _row_to_dict(cursor, row) -> dict:
@@ -143,7 +152,7 @@ def _load_session(session_id: str) -> dict:
 
 
 def _save_session(sess: dict):
-    conn = _get_db()
+    conn = _get_write_db()
     # Use a simple approach: try UPDATE first, then INSERT if no rows affected
     cur = conn.execute("""
         UPDATE survey_sessions 
@@ -156,7 +165,6 @@ def _save_session(sess: dict):
         sess["session_id"],
     ))
     if cur.rowcount == 0:
-        # Row doesn't exist — insert it
         conn.execute("""
             INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
             VALUES (?, ?, ?, ?, datetime('now'))
@@ -167,23 +175,32 @@ def _save_session(sess: dict):
             sess["probe_count"],
         ))
     conn.commit()
+    conn.close()
 
 
 def _reset_session(session_id: str):
-    conn = _get_db()
-    conn.execute("""
-        INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-        VALUES (?, '[]', 0, 0, datetime('now'))
-        ON CONFLICT(session_id) DO UPDATE SET
-            conversation='[]', q_index=0, probe_count=0, updated_at=datetime('now')
+    conn = _get_write_db()
+    cur = conn.execute("""
+        UPDATE survey_sessions 
+        SET conversation='[]', q_index=0, probe_count=0, updated_at=datetime('now')
+        WHERE session_id=?
     """, (session_id,))
-    conn.execute("""
-        INSERT INTO survey_profiles (session_id, profile, updated_at)
-        VALUES (?, '', datetime('now'))
-        ON CONFLICT(session_id) DO UPDATE SET
-            profile='', updated_at=datetime('now')
+    if cur.rowcount == 0:
+        conn.execute("""
+            INSERT INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+            VALUES (?, '[]', 0, 0, datetime('now'))
+        """, (session_id,))
+    cur2 = conn.execute("""
+        UPDATE survey_profiles SET profile='', updated_at=datetime('now')
+        WHERE session_id=?
     """, (session_id,))
+    if cur2.rowcount == 0:
+        conn.execute("""
+            INSERT INTO survey_profiles (session_id, profile, updated_at)
+            VALUES (?, '', datetime('now'))
+        """, (session_id,))
     conn.commit()
+    conn.close()
 
 
 def _load_profile(session_id: str) -> str:
@@ -195,15 +212,18 @@ def _load_profile(session_id: str) -> str:
 
 
 def _save_profile(session_id: str, content: str):
-    conn = _get_db()
-    conn.execute("""
-        INSERT INTO survey_profiles (session_id, profile, updated_at)
-        VALUES (?, ?, datetime('now'))
-        ON CONFLICT(session_id) DO UPDATE SET
-            profile=excluded.profile,
-            updated_at=datetime('now')
-    """, (session_id, content))
+    conn = _get_write_db()
+    cur = conn.execute("""
+        UPDATE survey_profiles SET profile=?, updated_at=datetime('now')
+        WHERE session_id=?
+    """, (content, session_id))
+    if cur.rowcount == 0:
+        conn.execute("""
+            INSERT INTO survey_profiles (session_id, profile, updated_at)
+            VALUES (?, ?, datetime('now'))
+        """, (session_id, content))
     conn.commit()
+    conn.close()
 
 
 def _get_state(sess: dict) -> dict:
