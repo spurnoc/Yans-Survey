@@ -599,16 +599,24 @@ async def chat(req: ChatRequest):
                 sess["probe_count"] = 0
             else:
                 # AI probed instead of advancing — stay on current question
-                # but mark as probed so next answer forces advance
-                sess["probe_count"] = 1
-                # q_index stays where it is
+                # but increment probe_count. After 2 failed attempts to advance,
+                # force it — we'd rather skip a question than loop forever.
+                sess["probe_count"] += 1
+                if sess["probe_count"] >= 3:
+                    # Stuck — force advance to the target question
+                    sess["q_index"] = target_q_index
+                    sess["probe_count"] = 0
         elif not should_probe:
             # Last question answered — survey complete
             sess["q_index"] = target_q_index
             sess["probe_count"] = 0
         else:
             # We told the AI to probe — q_index stays, probe_count already set
-            sess["probe_count"] = 1
+            sess["probe_count"] += 1
+            if sess["probe_count"] >= 3:
+                # Too many probes — force advance
+                sess["q_index"] = min(sess["q_index"] + 1, len(QUESTIONS))
+                sess["probe_count"] = 0
 
         # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
