@@ -33,7 +33,7 @@ app.add_middleware(
 
 SPUR_API_BASE = os.getenv("SPUR_API_BASE", "https://ai.spuric.com/v1")
 SPUR_DEMO_API_KEY = os.getenv("SPUR_DEMO_API_KEY", "")
-SURVEY_MODEL = os.getenv("SURVEY_MODEL", "spur-glm-air")
+SURVEY_MODEL = os.getenv("SURVEY_MODEL", "spur-glm-5-2")
 ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-glm-air")
 PROBE_MODEL = os.getenv("PROBE_MODEL", "spur-glm-5-2")
 TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
@@ -566,7 +566,7 @@ async def chat(req: ChatRequest):
                         "messages": messages,
                         "stream": True,
                         "temperature": 0.6,
-                        "max_tokens": 800,
+                        "max_tokens": 1200,
                     },
                     headers={
                         "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
@@ -604,7 +604,7 @@ async def chat(req: ChatRequest):
                                 "messages": messages,
                                 "stream": False,
                                 "temperature": 0.6,
-                                "max_tokens": 800,
+                                "max_tokens": 1200,
                             },
                             headers={
                                 "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
