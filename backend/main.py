@@ -2,9 +2,9 @@
 SPUR Survey — Benji / Yans Deli conversational survey.
 
 Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
-- Per-browser sessions via session_id, persisted to Turso (cloud SQLite)
+- Per-browser sessions via session_id, persisted to Turso via HTTP API
 - AI generates dynamic multiple-choice options based on conversation context
-- Behavioral analysis runs after each answer, stored in DB (not filesystem)
+- Behavioral analysis runs after each answer, stored in DB
 - Findings are fed back into the system prompt so the AI adapts in real-time
 """
 from __future__ import annotations
@@ -35,7 +35,6 @@ SPUR_API_BASE = os.getenv("SPUR_API_BASE", "https://ai.spuric.com/v1")
 SPUR_DEMO_API_KEY = os.getenv("SPUR_DEMO_API_KEY", "")
 SURVEY_MODEL = os.getenv("SURVEY_MODEL", "spur-glm-5-2")
 ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-glm-air")
-PROBE_MODEL = os.getenv("PROBE_MODEL", "spur-glm-5-2")
 TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 
@@ -57,49 +56,68 @@ QUESTIONS = [
 ]
 
 
-# ── Turso (libsql) persistence ────────────────────────────────────
-import libsql_experimental as libsql
-
-_db_conn = None
-
-def _get_db():
-    """Always create a fresh connection. The cached connection was showing
-    stale data — reads didn't see writes from a different connection."""
-    if not TURSO_DB_URL:
-        raise Exception("TURSO_DB_URL not set")
-    return libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
+# ── Turso HTTP API persistence ───────────────────────────────────
+def _turso_url():
+    """Convert the Turso libsql URL to the HTTP API URL."""
+    url = TURSO_DB_URL
+    if url.startswith("libsql://"):
+        url = "https://" + url[len("libsql://"):]
+    return url.rstrip("/") + "/v2/pipeline"
 
 
-def _get_write_db():
-    """Same as _get_db — fresh connection for writes."""
-    if not TURSO_DB_URL:
-        raise Exception("TURSO_DB_URL not set")
-    return libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
+def _turso_execute(sql: str, args: list = None):
+    """Execute a SQL statement via the Turso HTTP API."""
+    body = {"requests": [{"type": "execute", "stmt": {"sql": sql}}]}
+    if args:
+        body["requests"][0]["stmt"]["args"] = args
+    resp = httpx.post(
+        _turso_url(),
+        json=body,
+        headers={
+            "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        timeout=30.0,
+    )
+    if resp.status_code != 200:
+        raise Exception(f"Turso API error: {resp.status_code} {resp.text[:200]}")
+    return resp.json()
 
 
-def _row_to_dict(cursor, row) -> dict:
-    """Convert a row tuple to a dict using cursor column names."""
-    return {col[0]: row[i] for i, col in enumerate(cursor.description)}
-
-
-def _fetchone(conn, query, params=()) -> dict | None:
-    """Execute query and return one row as a dict, or None."""
-    cur = conn.execute(query, params)
-    row = cur.fetchone()
-    if row is None:
-        return None
-    return _row_to_dict(cur, row)
-
-
-def _fetchall(conn, query, params=()) -> list[dict]:
-    """Execute query and return all rows as dicts."""
-    cur = conn.execute(query, params)
-    return [_row_to_dict(cur, row) for row in cur.fetchall()]
+def _turso_query(sql: str, args: list = None) -> list[dict]:
+    """Execute a SELECT and return rows as dicts."""
+    body = {"requests": [{"type": "execute", "stmt": {"sql": sql}}]}
+    if args:
+        body["requests"][0]["stmt"]["args"] = args
+    resp = httpx.post(
+        _turso_url(),
+        json=body,
+        headers={
+            "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+            "Content-Type": "application/json",
+        },
+        timeout=30.0,
+    )
+    if resp.status_code != 200:
+        raise Exception(f"Turso API error: {resp.status_code} {resp.text[:200]}")
+    data = resp.json()
+    results = data.get("results", [])
+    if not results:
+        return []
+    result = results[0]
+    if "error" in result:
+        raise Exception(f"Turso SQL error: {result['error']['message']}")
+    rows_raw = result.get("response", {}).get("result", {}).get("rows", [])
+    cols = [c["name"] for c in result.get("response", {}).get("result", {}).get("cols", [])]
+    rows = []
+    for row in rows_raw:
+        values = [v.get("value") if isinstance(v, dict) else v for v in row]
+        rows.append(dict(zip(cols, values)))
+    return rows
 
 
 def init_db():
-    conn = _get_db()
-    conn.executescript("""
+    _turso_execute("""
     CREATE TABLE IF NOT EXISTS survey_sessions (
         session_id TEXT PRIMARY KEY,
         conversation TEXT DEFAULT '[]',
@@ -107,33 +125,35 @@ def init_db():
         probe_count INTEGER DEFAULT 0,
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now'))
-    );
-
+    )
+    """)
+    _turso_execute("""
     CREATE TABLE IF NOT EXISTS survey_profiles (
         session_id TEXT PRIMARY KEY,
         profile TEXT DEFAULT '',
         updated_at TEXT DEFAULT (datetime('now'))
-    );
+    )
     """)
-    conn.commit()
 
 
 def _load_session(session_id: str) -> dict:
-    conn = _get_db()
-    row = _fetchone(conn, "SELECT * FROM survey_sessions WHERE session_id=?", (session_id,))
-    if row:
+    rows = _turso_query(
+        "SELECT * FROM survey_sessions WHERE session_id=?",
+        [{"type": "text", "value": session_id}]
+    )
+    if rows:
+        row = rows[0]
         return {
             "session_id": session_id,
-            "conversation": json.loads(row["conversation"]),
-            "q_index": row["q_index"],
-            "probe_count": row["probe_count"],
+            "conversation": json.loads(row.get("conversation") or "[]"),
+            "q_index": int(row.get("q_index") or 0),
+            "probe_count": int(row.get("probe_count") or 0),
         }
     else:
-        conn.execute(
+        _turso_execute(
             "INSERT INTO survey_sessions (session_id) VALUES (?)",
-            (session_id,),
+            [{"type": "text", "value": session_id}]
         )
-        conn.commit()
         return {
             "session_id": session_id,
             "conversation": [],
@@ -143,50 +163,50 @@ def _load_session(session_id: str) -> dict:
 
 
 def _save_session(sess: dict):
-    conn = _get_write_db()
-    conn.execute("""
-        INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-        VALUES (?, ?, ?, ?, datetime('now'))
-    """, (
-        sess["session_id"],
-        json.dumps(sess["conversation"]),
-        sess["q_index"],
-        sess["probe_count"],
-    ))
-    conn.commit()
-    pass  # libsql Connection doesn't support close()
+    _turso_execute(
+        """INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+           VALUES (?, ?, ?, ?, datetime('now'))""",
+        [
+            {"type": "text", "value": sess["session_id"]},
+            {"type": "text", "value": json.dumps(sess["conversation"])},
+            {"type": "integer", "value": sess["q_index"]},
+            {"type": "integer", "value": sess["probe_count"]},
+        ]
+    )
 
 
 def _reset_session(session_id: str):
-    conn = _get_write_db()
-    conn.execute("""
-        INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
-        VALUES (?, '[]', 0, 0, datetime('now'))
-    """, (session_id,))
-    conn.execute("""
-        INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
-        VALUES (?, '', datetime('now'))
-    """, (session_id,))
-    conn.commit()
-    pass  # libsql Connection doesn't support close()
+    _turso_execute(
+        """INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
+           VALUES (?, '[]', 0, 0, datetime('now'))""",
+        [{"type": "text", "value": session_id}]
+    )
+    _turso_execute(
+        """INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
+           VALUES (?, '', datetime('now'))""",
+        [{"type": "text", "value": session_id}]
+    )
 
 
 def _load_profile(session_id: str) -> str:
-    conn = _get_db()
-    row = _fetchone(conn, "SELECT profile FROM survey_profiles WHERE session_id=?", (session_id,))
-    if row and row["profile"]:
-        return row["profile"]
+    rows = _turso_query(
+        "SELECT profile FROM survey_profiles WHERE session_id=?",
+        [{"type": "text", "value": session_id}]
+    )
+    if rows and rows[0].get("profile"):
+        return rows[0]["profile"]
     return ""
 
 
 def _save_profile(session_id: str, content: str):
-    conn = _get_write_db()
-    conn.execute("""
-        INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
-        VALUES (?, ?, datetime('now'))
-    """, (session_id, content))
-    conn.commit()
-    pass  # libsql Connection doesn't support close()
+    _turso_execute(
+        """INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
+           VALUES (?, ?, datetime('now'))""",
+        [
+            {"type": "text", "value": session_id},
+            {"type": "text", "value": content},
+        ]
+    )
 
 
 def _get_state(sess: dict) -> dict:
@@ -279,100 +299,8 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
         pass  # analysis is best-effort, don't block the survey
 
 
-async def _should_probe_llm(question_text: str, answer: str, already_probed: bool) -> bool:
-    """Ask a smarter model whether this answer needs a follow-up probe."""
-    if already_probed:
-        return False  # never probe twice
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{SPUR_API_BASE}/chat/completions",
-                json={
-                    "model": PROBE_MODEL,
-                    "messages": [
-                        {"role": "system", "content": (
-                            "You judge whether a survey answer is substantive enough to move on, "
-                            "or too thin/vague and needs a follow-up. "
-                            "Reply with ONLY 'PROBE' or 'ADVANCE' — nothing else. "
-                            "PROBE if the answer is vague, evasive, or missing key detail. "
-                            "ADVANCE if the answer actually addresses the question, even if brief."
-                        )},
-                        {"role": "user", "content": (
-                            f"QUESTION: {question_text}\n"
-                            f"ANSWER: {answer}\n"
-                            f"Already probed: {already_probed}\n"
-                            f"Decide: PROBE or ADVANCE?"
-                        )},
-                    ],
-                    "stream": False,
-                    "temperature": 0.1,
-                    "max_tokens": 800,
-                },
-                headers={
-                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-            )
-            if resp.status_code != 200:
-                return False
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            content = msg.get("content") or ""
-            if not content and msg.get("reasoning"):
-                content = msg["reasoning"]
-            return "PROBE" in content.upper()
-    except Exception:
-        return False  # on error, just advance
-
-
-async def _verify_advance_llm(target_question: str, ai_response: str) -> bool:
-    """Ask a smarter model whether the AI response actually asks the target question."""
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            resp = await client.post(
-                f"{SPUR_API_BASE}/chat/completions",
-                json={
-                    "model": PROBE_MODEL,
-                    "messages": [
-                        {"role": "system", "content": (
-                            "You are a QA checker. You verify whether a survey AI actually asked "
-                            "the question it was supposed to ask. "
-                            "Reply with ONLY 'YES' or 'NO'. "
-                            "YES if the response asks about the same topic as the target question "
-                            "(even if rephrased). NO if the response is asking about something else "
-                            "(a different topic or a follow-up probe on a previous question)."
-                        )},
-                        {"role": "user", "content": (
-                            f"TARGET QUESTION: {target_question}\n\n"
-                            f"AI RESPONSE: {ai_response}\n\n"
-                            f"Does the AI response ask about the same topic as the target question?"
-                        )},
-                    ],
-                    "stream": False,
-                    "temperature": 0.1,
-                    "max_tokens": 800,
-                },
-                headers={
-                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-            )
-            if resp.status_code != 200:
-                return True  # on error, assume advance (don't block the survey)
-            data = resp.json()
-            msg = data["choices"][0]["message"]
-            content = msg.get("content") or ""
-            if not content and msg.get("reasoning"):
-                content = msg["reasoning"]
-            return "YES" in content.upper()
-    except Exception:
-        return True  # on error, assume advance
-
-
-# ── System prompt builder (includes behavioral profile) ─────────
-def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, answered_q_text: str, target_q_index: int) -> str:
-    # The target question is the one the AI should ask now.
-    # target_q_index is passed in so we don't modify sess["q_index"] yet.
+# ── System prompt builder ────────────────────────────────────────
+def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: str, target_q_index: int) -> str:
     target_q = QUESTIONS[target_q_index] if target_q_index < len(QUESTIONS) else None
 
     if not target_q:
@@ -383,14 +311,12 @@ def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, ans
 
     target_q_text = target_q["text"]
     target_q_type = target_q["type"]
-    target_q_tag = target_q.get("tag", "")
     target_q_id = target_q["id"]
 
-    if target_q_type == "choice" and not should_probe:
+    if target_q_type == "choice":
         choice_instruction = (
             f"\nQuestion #{target_q_id} is a multiple-choice question. "
             f'The topic is: "{target_q_text}"\n'
-            f"Tag: {target_q_tag}\n"
             "Generate 3-5 answer choices natural to how Benji has been talking. "
             "Make them specific and concrete. Mix in a 'something else' or 'not sure' option.\n"
             "IMPORTANT: Do NOT say the choices out loud. Just ask the question naturally. "
@@ -401,7 +327,7 @@ def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, ans
     else:
         choice_instruction = ""
 
-    # Load behavioral profile if it exists (cap to last 1500 chars to keep prompt lean)
+    # Load behavioral profile if it exists
     profile = _load_profile(sess["session_id"])
     profile_section = ""
     if profile:
@@ -412,34 +338,12 @@ def _build_system_prompt(sess: dict, should_probe: bool, answered_q_id: int, ans
             f"{profile}\n"
         )
 
-    # Build list of questions already asked (so AI doesn't repeat them)
+    # Build list of questions already asked
     asked_questions = []
     for i in range(target_q_index):
         if i < len(QUESTIONS):
             asked_questions.append(f"Q{QUESTIONS[i]['id']}: {QUESTIONS[i]['text']}")
     asked_list = "\n".join(asked_questions) if asked_questions else "None yet"
-
-    # The backend has ALREADY decided whether to probe or advance.
-    # Tell the AI exactly what to do.
-    if should_probe:
-        action_instruction = (
-            f"\nINSTRUCTION: The respondent's answer to question #{answered_q_id} was short or vague. "
-            f"Ask ONE follow-up probe to draw him out "
-            f"(e.g. 'Can you say more about that?' or 'What do you mean by that?'). "
-            f"Do NOT ask the next survey question yet."
-        )
-    elif target_q_id != answered_q_id:
-        # Advancing to a new question
-        action_instruction = (
-            f"\nINSTRUCTION: React briefly to his answer, then ask question #{target_q_id}: "
-            f'"{target_q_text}". Rephrase it naturally — do not read it verbatim. '
-            f"This is a NEW question about a different topic. Do NOT repeat anything from the asked list."
-        )
-    else:
-        action_instruction = (
-            f"\nINSTRUCTION: React briefly to his answer, then ask question #{target_q_id}: "
-            f'"{target_q_text}". Rephrase it naturally.'
-        )
 
     return (
         f"""You are conducting a conversational survey with Benji, the owner of Yans Deli. You're having a real conversation — one question at a time, react to his answers like a normal person would, then move on.
@@ -459,40 +363,22 @@ CURRENT STATE:
 - Question type: {target_q_type}
 
 Respond as plain text. Just the reaction and the question. No markers, no JSON, no formatting.
-{action_instruction}
 {choice_instruction}
 {profile_section}"""
     )
 
 
-def _parse_response(text: str) -> tuple[str, list[str], str]:
-    """Extract CHOICES markers and determine action from AI response.
-    Returns (clean_text, choices_list, action) where action is 'ADVANCE' or 'PROBE'.
-    """
+def _parse_response(text: str) -> tuple[str, list[str]]:
+    """Extract CHOICES marker from AI response. Returns (clean_text, choices_list)."""
     choices = []
-
-    # Extract CHOICES
     choices_match = re.search(r'CHOICES:\s*(.+)', text, re.IGNORECASE)
     if choices_match:
         choices_str = choices_match.group(1).strip()
         choices = [c.strip() for c in choices_str.split('|') if c.strip()]
 
-    # Strip all markers from visible text
-    clean_text = re.sub(r'ACTION:\s*\w+', '', text, flags=re.IGNORECASE)
-    clean_text = re.sub(r'CHOICES:\s*.+', '', clean_text, flags=re.IGNORECASE)
+    clean_text = re.sub(r'CHOICES:\s*.+', '', text, flags=re.IGNORECASE)
     clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
-
-    # Check if AI explicitly said ADVANCE or PROBE
-    action_match = re.search(r'ACTION:\s*(ADVANCE|PROBE)', text, re.IGNORECASE)
-    if action_match:
-        action = action_match.group(1).upper()
-    else:
-        # AI didn't include the marker — guess based on content.
-        # If response is short and ends with a question mark but doesn't
-        # reference the next scripted question, it's likely a probe.
-        action = "ADVANCE"  # default to advance
-
-    return clean_text, choices, action
+    return clean_text, choices
 
 
 @app.post("/api/survey/chat")
@@ -502,29 +388,23 @@ async def chat(req: ChatRequest):
     if sess["q_index"] >= len(QUESTIONS):
         return JSONResponse({"done": True, "message": "Survey already complete."})
 
-    # Get the current question (the one being answered right now)
     current_q = QUESTIONS[sess["q_index"]]
     current_q_text = current_q["text"]
 
     sess["conversation"].append({"role": "user", "content": req.answer})
 
-    # Fire behavioral analysis in the background — don't block the survey.
+    # Fire behavioral analysis in the background
     import asyncio
     asyncio.create_task(_run_analysis(current_q_text, req.answer, sess["session_id"]))
 
     answered_q_id = current_q["id"]
     answered_q_text = current_q_text
+    target_q_index = sess["q_index"] + 1
 
-    # Determine the target question (what the AI should ask next)
-    target_q_index = sess["q_index"] + 1  # always aim for the next question
-    should_probe = False
-
-    # Build the prompt with the target question
-    system_prompt = _build_system_prompt(sess, should_probe, answered_q_id, answered_q_text, target_q_index)
+    system_prompt = _build_system_prompt(sess, answered_q_id, answered_q_text, target_q_index)
     messages = [{"role": "system", "content": system_prompt}]
 
-    # Send ONLY the last 4 messages for context — too much history makes
-    # the AI follow the conversation pattern instead of instructions
+    # Send last 4 messages for context
     recent = sess["conversation"][-4:]
     for msg in recent:
         if msg["role"] == "user":
@@ -532,14 +412,11 @@ async def chat(req: ChatRequest):
         else:
             messages.append({"role": "assistant", "content": msg["content"]})
 
-    # For the first answer, inject the opening question so the AI knows what was asked
     if len(sess["conversation"]) == 1:
         first_q = QUESTIONS[0]
         messages.insert(1, {"role": "assistant", "content": first_q["text"]})
 
-    # AI generates a reaction AND rephrases the next question.
-    # Backend streams whatever the AI produces — no appending needed.
-    # The AI sees the exact question text and is told to rephrase it naturally.
+    # Tell the AI to react + ask the next question (rephrased)
     if target_q_index < len(QUESTIONS):
         target_q = QUESTIONS[target_q_index]
         messages.append({"role": "user", "content": (
@@ -624,21 +501,18 @@ async def chat(req: ChatRequest):
             return
 
         # Parse choices from the response
-        clean_text, choices, _ = _parse_response(full_response)
+        clean_text, choices = _parse_response(full_response)
 
-        # ALWAYS advance — the AI generated the reaction + rephrased question.
-        # No probe detection, no appending. Just advance.
+        # ALWAYS advance
         sess["q_index"] = target_q_index
         sess["probe_count"] = 0
 
-        # Store the clean text (without CHOICES marker) in conversation
         sess["conversation"].append({"role": "assistant", "content": clean_text})
 
-        # Save to Turso — wrap in try/except so we can see if it fails
+        # Save to Turso via HTTP API
         try:
             _save_session(sess)
         except Exception as save_err:
-            # Send the error through the stream so we can debug
             yield f"data: {json.dumps({'error': f'Save failed: {str(save_err)[:200]}'})}\n\n"
 
         state = _get_state(sess)
@@ -676,10 +550,8 @@ async def get_questions():
     return {"questions": QUESTIONS}
 
 
-# ── Profile endpoint — returns the .md content from DB ───────────
 @app.get("/api/survey/profile/{session_id}")
 async def get_profile(session_id: str):
-    """Return the behavioral profile as markdown text."""
     profile = _load_profile(session_id)
     if not profile:
         return JSONResponse({"profile": None, "message": "No profile yet."})
@@ -688,9 +560,7 @@ async def get_profile(session_id: str):
 
 @app.get("/api/survey/profiles")
 async def list_profiles():
-    """List all profiles in the DB."""
-    conn = _get_db()
-    rows = _fetchall(conn,
+    rows = _turso_query(
         "SELECT session_id, length(profile) as size, updated_at FROM survey_profiles WHERE profile != '' ORDER BY updated_at DESC"
     )
     profiles = [{"session_id": r["session_id"], "size_bytes": r["size"], "modified": r["updated_at"]} for r in rows]
