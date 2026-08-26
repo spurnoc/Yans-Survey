@@ -33,8 +33,8 @@ app.add_middleware(
 
 SPUR_API_BASE = os.getenv("SPUR_API_BASE", "https://ai.spuric.com/v1")
 SPUR_DEMO_API_KEY = os.getenv("SPUR_DEMO_API_KEY", "")
-SURVEY_MODEL = os.getenv("SURVEY_MODEL", "spur-chat-mini")
-ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-chat-mini")
+SURVEY_MODEL = os.getenv("SURVEY_MODEL", "spur-glm-air")
+ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-glm-air")
 TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 
@@ -64,7 +64,12 @@ _db_conn = None
 def _get_db():
     global _db_conn
     if _db_conn is not None:
-        return _db_conn
+        # Test the connection is still alive with a cheap query
+        try:
+            _db_conn.execute("SELECT 1").fetchone()
+            return _db_conn
+        except Exception:
+            _db_conn = None  # dead, recreate
     if not TURSO_DB_URL:
         raise Exception("TURSO_DB_URL not set")
     _db_conn = libsql.connect(TURSO_DB_URL, auth_token=TURSO_AUTH_TOKEN)
@@ -322,10 +327,12 @@ def _build_system_prompt(sess: dict) -> str:
             "This line is invisible to the user."
         )
 
-    # Load behavioral profile if it exists
+    # Load behavioral profile if it exists (cap to last 1500 chars to keep prompt lean)
     profile = _load_profile(sess["session_id"])
     profile_section = ""
     if profile:
+        if len(profile) > 1500:
+            profile = profile[-1500:]
         profile_section = (
             "\nBEHAVIORAL PROFILE (what you've learned about Benji so far — adapt your questioning style accordingly):\n"
             f"{profile}\n"
@@ -410,8 +417,10 @@ async def chat(req: ChatRequest):
 
     system_prompt = _build_system_prompt(sess)
     messages = [{"role": "system", "content": system_prompt}]
-    # Send the FULL conversation — 13 questions is small enough to fit in context
-    for msg in sess["conversation"]:
+    # Send last 12 messages for context (enough to remember recent answers
+    # without bloating the prompt and slowing down the model)
+    recent = sess["conversation"][-12:]
+    for msg in recent:
         if msg["role"] == "user":
             messages.append({"role": "user", "content": msg["content"]})
         else:
