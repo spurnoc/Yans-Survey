@@ -321,13 +321,13 @@ textarea{resize:none}
     </div>
     <div style="display:flex;align-items:center;gap:8px">
       <span class="mode-pill onboarding" id="mode-pill">Onboarding</span>
-      <div class="reset-btn" onclick="resetSurvey()">Reset</div>
+      <div class="reset-btn" onclick="resetSurvey()" role="button" aria-label="Reset survey" tabindex="0">Reset</div>
     </div>
   </div>
 
-  <div class="progress-bar" id="progress-bar"></div>
+  <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemax="13" aria-label="Survey progress"></div>
 
-  <div class="chat-area" id="chat-area">
+  <div class="chat-area" id="chat-area" role="log" aria-live="polite" aria-label="Survey conversation">
     <!-- Populated by init() — either opening message for new sessions or full conversation for returning ones -->
   </div>
 
@@ -465,6 +465,7 @@ function renderExistingConversation(state) {
 function updateProgress() {
   const bar = document.getElementById('progress-bar');
   bar.innerHTML = '';
+  bar.setAttribute('aria-valuenow', qIndex + 1);
   for (let i = 0; i < totalQuestions; i++) {
     const dot = document.createElement('div');
     dot.className = 'progress-dot';
@@ -495,20 +496,56 @@ function showInput(choices) {
   currentChoices = choices || null;
 
   if (choices && choices.length > 0) {
-    let html = '<div class="choices">';
+    // Use createElement instead of innerHTML to prevent XSS
+    const container = document.createElement('div');
+    container.className = 'choices';
+    container.setAttribute('role', 'group');
+    container.setAttribute('aria-label', 'Answer choices');
+
     choices.forEach((c, i) => {
-      html += `<button class="choice-btn" style="animation-delay:${i * 40}ms" onclick="submitAnswer('${c.replace(/'/g, "\\'")}')"><div class="dot"></div><span>${escapeHtml(c)}</span></button>`;
+      const btn = document.createElement('button');
+      btn.className = 'choice-btn';
+      btn.style.animationDelay = `${i * 40}ms`;
+      btn.setAttribute('aria-label', c);
+      btn.onclick = () => submitAnswer(c);
+
+      const dot = document.createElement('div');
+      dot.className = 'dot';
+      btn.appendChild(dot);
+
+      const span = document.createElement('span');
+      span.textContent = c;  // textContent is XSS-safe
+      btn.appendChild(span);
+
+      container.appendChild(btn);
     });
+
     // Add "type your own" option
-    html += `<button class="choice-btn" style="animation-delay:${choices.length * 40}ms" onclick="switchToTextInput()"><div class="dot"></div><span style="color:var(--warm-muted);font-style:italic">Type my own answer...</span></button>`;
-    html += '</div>';
-    area.innerHTML = html;
+    const ownBtn = document.createElement('button');
+    ownBtn.className = 'choice-btn';
+    ownBtn.style.animationDelay = `${choices.length * 40}ms`;
+    ownBtn.style.color = 'var(--warm-muted)';
+    ownBtn.style.fontStyle = 'italic';
+    ownBtn.setAttribute('aria-label', 'Type your own answer');
+    ownBtn.onclick = () => switchToTextInput();
+
+    const ownDot = document.createElement('div');
+    ownDot.className = 'dot';
+    ownBtn.appendChild(ownDot);
+
+    const ownSpan = document.createElement('span');
+    ownSpan.textContent = 'Type my own answer...';
+    ownBtn.appendChild(ownSpan);
+
+    container.appendChild(ownBtn);
+    area.innerHTML = '';
+    area.appendChild(container);
     autoScroll();
   } else {
     area.innerHTML = `
       <div class="text-wrap">
-        <textarea class="text-input" id="text-answer" placeholder="Type your answer..." rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
-        <button class="send-btn" onclick="submitTextAnswer()" id="send-btn">→</button>
+        <textarea class="text-input" id="text-answer" placeholder="Type your answer..." rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)" aria-label="Type your answer"></textarea>
+        <button class="send-btn" onclick="submitTextAnswer()" id="send-btn" aria-label="Send answer">→</button>
       </div>`;
     setTimeout(() => document.getElementById('text-answer')?.focus(), 50);
     autoScroll();

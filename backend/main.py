@@ -1,5 +1,5 @@
 """
-SPUR Survey — Benji / Yans Deli conversational survey.
+SPUR Survey — Daily 15 Business Survey conversational survey.
 
 Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
 - Per-browser sessions via session_id, persisted to Turso via HTTP API
@@ -9,11 +9,13 @@ Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
 """
 from __future__ import annotations
 
-import os, json, time, re
+import os, json, time, re, asyncio, logging
 from typing import Optional
 from datetime import datetime, timezone
 
 import httpx
+
+logger = logging.getLogger(__name__)
 from fastapi import FastAPI, HTTPException, Header, Body
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -184,12 +186,13 @@ def _detect_business_type(conversation: list) -> str:
     return "Other"
 
 
-def _detect_business_type_from_session(session_id: str) -> str:
+async def _detect_business_type_from_session(session_id: str) -> str:
     """Load the onboarding conversation and detect business type."""
     try:
-        sess = _load_session(session_id)
+        sess = await _load_session(session_id)
         return _detect_business_type(sess.get("conversation", []))
-    except Exception:
+    except Exception as e:
+        logger.debug("_detect_business_type_from_session failed: %s", e)
         return "Other"
 
 
@@ -202,8 +205,8 @@ def _turso_url():
     return url.rstrip("/") + "/v2/pipeline"
 
 
-def _turso_execute(sql: str, args: list = None):
-    """Execute a SQL statement via the Turso HTTP API.
+async def _turso_execute(sql: str, args: list = None):
+    """Execute a SQL statement via the Turso HTTP API (async).
     Args should be a list of dicts like {"type": "text", "value": "hello"}.
     The value is ALWAYS a string, even for integers.
     """
@@ -212,35 +215,35 @@ def _turso_execute(sql: str, args: list = None):
         # Ensure all values are strings
         stmt["args"] = [{"type": a.get("type", "text"), "value": str(a["value"])} for a in args]
     body = {"requests": [{"type": "execute", "stmt": stmt}]}
-    resp = httpx.post(
-        _turso_url(),
-        json=body,
-        headers={
-            "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        timeout=30.0,
-    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            _turso_url(),
+            json=body,
+            headers={
+                "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+        )
     if resp.status_code != 200:
         raise Exception(f"Turso API error: {resp.status_code} {resp.text[:300]}")
     return resp.json()
 
 
-def _turso_query(sql: str, args: list = None) -> list[dict]:
-    """Execute a SELECT and return rows as dicts."""
+async def _turso_query(sql: str, args: list = None) -> list[dict]:
+    """Execute a SELECT and return rows as dicts (async)."""
     stmt = {"sql": sql}
     if args:
         stmt["args"] = [{"type": a.get("type", "text"), "value": str(a["value"])} for a in args]
     body = {"requests": [{"type": "execute", "stmt": stmt}]}
-    resp = httpx.post(
-        _turso_url(),
-        json=body,
-        headers={
-            "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
-            "Content-Type": "application/json",
-        },
-        timeout=30.0,
-    )
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            _turso_url(),
+            json=body,
+            headers={
+                "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+        )
     if resp.status_code != 200:
         raise Exception(f"Turso API error: {resp.status_code} {resp.text[:300]}")
     data = resp.json()
@@ -269,8 +272,8 @@ def _turso_query(sql: str, args: list = None) -> list[dict]:
     return rows
 
 
-def init_db():
-    _turso_execute("""
+async def init_db():
+    await _turso_execute("""
     CREATE TABLE IF NOT EXISTS survey_sessions (
         session_id TEXT PRIMARY KEY,
         conversation TEXT DEFAULT '[]',
@@ -280,14 +283,14 @@ def init_db():
         updated_at TEXT DEFAULT (datetime('now'))
     )
     """)
-    _turso_execute("""
+    await _turso_execute("""
     CREATE TABLE IF NOT EXISTS survey_profiles (
         session_id TEXT PRIMARY KEY,
         profile TEXT DEFAULT '',
         updated_at TEXT DEFAULT (datetime('now'))
     )
     """)
-    _turso_execute("""
+    await _turso_execute("""
     CREATE TABLE IF NOT EXISTS daily_checkins (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id TEXT NOT NULL,
@@ -301,10 +304,10 @@ def init_db():
     """)
     # Add summary column if it doesn't exist (for already-deployed databases)
     try:
-        _turso_execute("ALTER TABLE daily_checkins ADD COLUMN summary TEXT DEFAULT ''")
-    except Exception:
-        pass  # Column already exists
-    _turso_execute("""
+        await _turso_execute("ALTER TABLE daily_checkins ADD COLUMN summary TEXT DEFAULT ''")
+    except Exception as e:
+        logger.debug("init_db: summary column already exists: %s", e)
+    await _turso_execute("""
     CREATE TABLE IF NOT EXISTS card_priorities (
         session_id TEXT PRIMARY KEY,
         ordered_cards TEXT DEFAULT '[]',
@@ -314,8 +317,8 @@ def init_db():
     """)
 
 
-def _load_session(session_id: str) -> dict:
-    rows = _turso_query(
+async def _load_session(session_id: str) -> dict:
+    rows = await _turso_query(
         "SELECT * FROM survey_sessions WHERE session_id=?",
         [{"type": "text", "value": session_id}]
     )
@@ -328,7 +331,7 @@ def _load_session(session_id: str) -> dict:
             "probe_count": int(row.get("probe_count") or 0),
         }
     else:
-        _turso_execute(
+        await _turso_execute(
             "INSERT INTO survey_sessions (session_id) VALUES (?)",
             [{"type": "text", "value": session_id}]
         )
@@ -340,8 +343,8 @@ def _load_session(session_id: str) -> dict:
         }
 
 
-def _save_session(sess: dict):
-    _turso_execute(
+async def _save_session(sess: dict):
+    await _turso_execute(
         """INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
            VALUES (?, ?, ?, ?, datetime('now'))""",
         [
@@ -353,21 +356,21 @@ def _save_session(sess: dict):
     )
 
 
-def _reset_session(session_id: str):
-    _turso_execute(
+async def _reset_session(session_id: str):
+    await _turso_execute(
         """INSERT OR REPLACE INTO survey_sessions (session_id, conversation, q_index, probe_count, updated_at)
            VALUES (?, '[]', 0, 0, datetime('now'))""",
         [{"type": "text", "value": session_id}]
     )
-    _turso_execute(
+    await _turso_execute(
         """INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
            VALUES (?, '', datetime('now'))""",
         [{"type": "text", "value": session_id}]
     )
 
 
-def _load_profile(session_id: str) -> str:
-    rows = _turso_query(
+async def _load_profile(session_id: str) -> str:
+    rows = await _turso_query(
         "SELECT profile FROM survey_profiles WHERE session_id=?",
         [{"type": "text", "value": session_id}]
     )
@@ -376,8 +379,8 @@ def _load_profile(session_id: str) -> str:
     return ""
 
 
-def _save_profile(session_id: str, content: str):
-    _turso_execute(
+async def _save_profile(session_id: str, content: str):
+    await _turso_execute(
         """INSERT OR REPLACE INTO survey_profiles (session_id, profile, updated_at)
            VALUES (?, ?, datetime('now'))""",
         [
@@ -388,28 +391,34 @@ def _save_profile(session_id: str, content: str):
 
 
 def _get_state(sess: dict) -> dict:
+    active_questions = _get_questions_for_type(_detect_business_type(sess.get("conversation", [])))
     return {
         "q_index": sess["q_index"],
-        "total_questions": len(QUESTIONS),
+        "total_questions": len(active_questions),
         "probe_count": sess["probe_count"],
         "conversation": sess["conversation"],
-        "current_question": QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None,
+        "current_question": active_questions[sess["q_index"]] if sess["q_index"] < len(active_questions) else None,
     }
 
 
 # ── Daily check-in helpers ───────────────────────────────────────
-def _has_completed_onboarding(session_id: str) -> bool:
+async def _has_completed_onboarding(session_id: str) -> bool:
     """Check if this session has completed the onboarding survey."""
-    rows = _turso_query(
+    rows = await _turso_query(
         "SELECT q_index FROM survey_sessions WHERE session_id=?",
         [{"type": "text", "value": session_id}]
     )
-    return rows and int(rows[0].get("q_index", 0)) >= len(QUESTIONS)
+    if not rows:
+        return False
+    # Use business-type-aware question count
+    sess = await _load_session(session_id)
+    active_questions = _get_questions_for_type(_detect_business_type(sess.get("conversation", [])))
+    return int(rows[0].get("q_index", 0)) >= len(active_questions)
 
 
-def _get_latest_checkin(session_id: str) -> dict | None:
+async def _get_latest_checkin(session_id: str) -> dict | None:
     """Get the most recent daily check-in for a session."""
-    rows = _turso_query(
+    rows = await _turso_query(
         "SELECT * FROM daily_checkins WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
         [{"type": "text", "value": session_id}]
     )
@@ -427,9 +436,9 @@ def _get_latest_checkin(session_id: str) -> dict | None:
     return None
 
 
-def _save_checkin(session_id: str, conversation: list, stress_points: list, wins: list, priorities: list, summary: str = ""):
+async def _save_checkin(session_id: str, conversation: list, stress_points: list, wins: list, priorities: list, summary: str = ""):
     """Save a daily check-in to Turso."""
-    _turso_execute(
+    await _turso_execute(
         """INSERT INTO daily_checkins (session_id, conversation, stress_points, wins, priorities, summary, created_at)
            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
         [
@@ -443,9 +452,9 @@ def _save_checkin(session_id: str, conversation: list, stress_points: list, wins
     )
 
 
-def _get_card_priorities(session_id: str) -> list:
+async def _get_card_priorities(session_id: str) -> list:
     """Get the current card priority ordering for a session."""
-    rows = _turso_query(
+    rows = await _turso_query(
         "SELECT ordered_cards FROM card_priorities WHERE session_id=?",
         [{"type": "text", "value": session_id}]
     )
@@ -454,9 +463,9 @@ def _get_card_priorities(session_id: str) -> list:
     return []
 
 
-def _save_card_priorities(session_id: str, ordered_cards: list, updated_by: str = "checkin"):
+async def _save_card_priorities(session_id: str, ordered_cards: list, updated_by: str = "checkin"):
     """Save or update card priorities for a session."""
-    _turso_execute(
+    await _turso_execute(
         """INSERT OR REPLACE INTO card_priorities (session_id, ordered_cards, last_updated_by, updated_at)
            VALUES (?, ?, ?, datetime('now'))""",
         [
@@ -468,9 +477,9 @@ def _save_card_priorities(session_id: str, ordered_cards: list, updated_by: str 
 
 
 # ── Check-in system prompt ───────────────────────────────────────
-def _build_checkin_prompt(session_id: str, conversation: list, checkin_step: int) -> str:
+async def _build_checkin_prompt(session_id: str, conversation: list, checkin_step: int) -> str:
     # Load business profile (behavioral) for context
-    profile = _load_profile(session_id)
+    profile = await _load_profile(session_id)
     profile_section = ""
     if profile:
         if len(profile) > 800:
@@ -478,7 +487,7 @@ def _build_checkin_prompt(session_id: str, conversation: list, checkin_step: int
         profile_section = f"\nBEHAVIORAL PROFILE (how this person communicates and thinks):\n{profile}\n"
 
     # Load onboarding answers for context
-    sess_rows = _turso_query(
+    sess_rows = await _turso_query(
         "SELECT conversation FROM survey_sessions WHERE session_id=?",
         [{"type": "text", "value": session_id}]
     )
@@ -489,7 +498,7 @@ def _build_checkin_prompt(session_id: str, conversation: list, checkin_step: int
         onboarding_summary = "What they told us during onboarding:\n" + "\n".join(f"- {a[:100]}" for a in answers[:5]) + "\n"
 
     # Load last check-in for continuity
-    last_checkin = _get_latest_checkin(session_id)
+    last_checkin = await _get_latest_checkin(session_id)
     last_checkin_section = ""
     if last_checkin:
         last_stress = last_checkin["stress_points"]
@@ -501,7 +510,7 @@ def _build_checkin_prompt(session_id: str, conversation: list, checkin_step: int
         last_checkin_section += f"(Last check-in was on {last_checkin['created_at']})\n"
 
     # Business-type-specific check-in questions
-    business_type = _detect_business_type_from_session(session_id)
+    business_type = await _detect_business_type_from_session(session_id)
 
     CHECKIN_QUESTIONS_BY_TYPE = {
         "Restaurant/Cafe": [
@@ -625,7 +634,7 @@ def _build_analysis_prompt(question_text: str, answer: str, existing_profile: st
 async def _run_analysis(question_text: str, answer: str, session_id: str):
     """Run behavioral analysis and save to DB. Best-effort, non-blocking."""
     try:
-        existing = _load_profile(session_id)
+        existing = await _load_profile(session_id)
         messages = _build_analysis_prompt(question_text, answer, existing)
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
@@ -650,9 +659,9 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
             if not content and msg.get("reasoning"):
                 content = msg["reasoning"]
             if content:
-                _save_profile(session_id, content.strip())
-    except Exception:
-        pass  # analysis is best-effort, don't block the survey
+                await _save_profile(session_id, content.strip())
+    except Exception as e:
+        logger.debug("_run_analysis failed: %s", e)  # analysis is best-effort, don't block the survey
 
 
 # ── Email transcript on survey completion ───────────────────────
@@ -660,21 +669,21 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-def _send_transcript_email(sess: dict):
+async def _send_transcript_email(sess: dict):
     """Send the survey transcript to akif@spuric.com. Best-effort."""
     try:
         conv = sess["conversation"]
         # Build readable transcript
-        lines = ["YANS DELI SURVEY — TRANSCRIPT", "=" * 40, ""]
+        lines = ["BUSINESS SURVEY — TRANSCRIPT", "=" * 40, ""]
         for msg in conv:
             if msg["role"] == "assistant":
                 lines.append(f"AI: {msg['content']}")
             else:
-                lines.append(f"Benji: {msg['content']}")
+                lines.append(f"Owner: {msg['content']}")
             lines.append("")
 
         # Attach behavioral profile if exists
-        profile = _load_profile(sess["session_id"])
+        profile = await _load_profile(sess["session_id"])
         if profile:
             lines.append("=" * 40)
             lines.append("BEHAVIORAL PROFILE")
@@ -686,20 +695,26 @@ def _send_transcript_email(sess: dict):
         msg = MIMEMultipart()
         msg["From"] = SMTP_USER
         msg["To"] = EMAIL_TO
-        msg["Subject"] = f"Yans Deli Survey — Session Complete ({sess['session_id'][:12]})"
+        msg["Subject"] = f"Business Survey — Session Complete ({sess['session_id'][:12]})"
 
         msg.attach(MIMEText(transcript_text, "plain"))
 
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(SMTP_USER, [EMAIL_TO], msg.as_string())
-    except Exception:
-        pass  # best-effort — don't break the survey
+        # Run synchronous SMTP in a thread to avoid blocking the event loop
+        await asyncio.to_thread(_send_email_sync, msg)
+    except Exception as e:
+        logger.debug("_send_transcript_email failed: %s", e)  # best-effort — don't break the survey
+
+
+def _send_email_sync(msg: MIMEMultipart):
+    """Synchronous SMTP send helper (called via asyncio.to_thread)."""
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, [EMAIL_TO], msg.as_string())
 
 
 # ── System prompt builder ────────────────────────────────────────
-def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: str, target_q_index: int) -> str:
+async def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: str, target_q_index: int) -> str:
     # Detect business type and get the right questions
     business_type = _detect_business_type(sess.get("conversation", []))
     active_questions = _get_questions_for_type(business_type)
@@ -720,7 +735,7 @@ def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: str, t
         choice_instruction = (
             f"\nQuestion #{target_q_id} is a multiple-choice question. "
             f'The topic is: "{target_q_text}"\n'
-            "Generate 3-5 answer choices natural to how Benji has been talking. "
+            "Generate 3-5 answer choices natural to how the business owner has been talking. "
             "Make them specific and concrete. Mix in a 'something else' or 'not sure' option.\n"
             "IMPORTANT: Do NOT say the choices out loud. Just ask the question naturally. "
             "After your response, on a SEPARATE line at the very end, put ONLY:\n"
@@ -731,7 +746,7 @@ def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: str, t
         choice_instruction = ""
 
     # Load behavioral profile if it exists
-    profile = _load_profile(sess["session_id"])
+    profile = await _load_profile(sess["session_id"])
     profile_section = ""
     if profile:
         if len(profile) > 1500:
@@ -790,25 +805,28 @@ def _parse_response(text: str) -> tuple[str, list[str]]:
 
 @app.post("/api/survey/chat")
 async def chat(req: ChatRequest):
-    sess = _load_session(req.session_id)
+    sess = await _load_session(req.session_id)
 
-    if sess["q_index"] >= len(QUESTIONS):
+    # Detect business type and get the right questions for this session
+    business_type = _detect_business_type(sess.get("conversation", []))
+    active_questions = _get_questions_for_type(business_type)
+
+    if sess["q_index"] >= len(active_questions):
         return JSONResponse({"done": True, "message": "Survey already complete."})
 
-    current_q = QUESTIONS[sess["q_index"]]
+    current_q = active_questions[sess["q_index"]]
     current_q_text = current_q["text"]
 
     sess["conversation"].append({"role": "user", "content": req.answer})
 
     # Fire behavioral analysis in the background
-    import asyncio
     asyncio.create_task(_run_analysis(current_q_text, req.answer, sess["session_id"]))
 
     answered_q_id = current_q["id"]
     answered_q_text = current_q_text
     target_q_index = sess["q_index"] + 1
 
-    system_prompt = _build_system_prompt(sess, answered_q_id, answered_q_text, target_q_index)
+    system_prompt = await _build_system_prompt(sess, answered_q_id, answered_q_text, target_q_index)
     messages = [{"role": "system", "content": system_prompt}]
 
     # Send last 4 messages for context
@@ -818,10 +836,6 @@ async def chat(req: ChatRequest):
             messages.append({"role": "user", "content": msg["content"]})
         else:
             messages.append({"role": "assistant", "content": msg["content"]})
-
-    # Detect business type and get the right questions for this session
-    business_type = _detect_business_type(sess.get("conversation", []))
-    active_questions = _get_questions_for_type(business_type)
 
     if len(sess["conversation"]) == 1:
         first_q = active_questions[0]
@@ -922,25 +936,26 @@ async def chat(req: ChatRequest):
 
         # Save to Turso via HTTP API
         try:
-            _save_session(sess)
+            await _save_session(sess)
         except Exception as save_err:
             yield f"data: {json.dumps({'error': f'Save failed: {str(save_err)[:200]}'})}\n\n"
 
         state = _get_state(sess)
-        is_done = sess['q_index'] >= len(QUESTIONS)
+        active_questions = _get_questions_for_type(_detect_business_type(sess.get("conversation", [])))
+        is_done = sess['q_index'] >= len(active_questions)
         yield f"data: {json.dumps({'state': state, 'choices': choices, 'done': is_done})}\n\n"
 
         # Send transcript email when survey completes
         if is_done:
             try:
-                _send_transcript_email(sess)
-            except Exception:
-                pass  # best-effort
+                await _send_transcript_email(sess)
+            except Exception as e:
+                logger.debug("send_transcript_email failed: %s", e)
             # Run card selection engine in background
             try:
                 asyncio.create_task(_run_card_selection(sess["session_id"]))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("create_task _run_card_selection failed: %s", e)
 
         yield "data: [DONE]\n\n"
 
@@ -976,7 +991,7 @@ async def _run_card_selection(session_id: str):
     card configurations, and UI density. Saves result to Turso."""
     try:
         # Load the full onboarding conversation
-        sess = _load_session(session_id)
+        sess = await _load_session(session_id)
         conv = sess["conversation"]
         conv_text = "\n".join(
             f"{'AI' if m['role']=='assistant' else 'Owner'}: {m['content']}"
@@ -984,7 +999,7 @@ async def _run_card_selection(session_id: str):
         )
 
         # Load behavioral profile
-        profile = _load_profile(session_id)
+        profile = await _load_profile(session_id)
 
         # Build the card list for the LLM
         card_list = "\n".join(
@@ -1059,7 +1074,7 @@ async def _run_card_selection(session_id: str):
             business_type = result.get("business_type", "general")
 
             # Save to Turso as a business profile entry
-            _save_business_profile(session_id, {
+            await _save_business_profile(session_id, {
                 "cards": cards,
                 "ui_density": ui_density,
                 "business_name": business_name,
@@ -1068,15 +1083,15 @@ async def _run_card_selection(session_id: str):
 
             # Also save initial card priorities (same order as selected)
             initial_priorities = [c["id"] for c in cards]
-            _save_card_priorities(session_id, initial_priorities, "onboarding")
+            await _save_card_priorities(session_id, initial_priorities, "onboarding")
 
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("_run_card_selection failed: %s", e)
 
 
-def _save_business_profile(session_id: str, profile_data: dict):
+async def _save_business_profile(session_id: str, profile_data: dict):
     """Save the business profile (card selection + config) to Turso."""
-    _turso_execute(
+    await _turso_execute(
         """CREATE TABLE IF NOT EXISTS business_profiles (
             session_id TEXT PRIMARY KEY,
             profile_data TEXT DEFAULT '{}',
@@ -1084,7 +1099,7 @@ def _save_business_profile(session_id: str, profile_data: dict):
             updated_at TEXT DEFAULT (datetime('now'))
         )"""
     )
-    _turso_execute(
+    await _turso_execute(
         """INSERT OR REPLACE INTO business_profiles (session_id, profile_data, updated_at)
            VALUES (?, ?, datetime('now'))""",
         [
@@ -1094,17 +1109,17 @@ def _save_business_profile(session_id: str, profile_data: dict):
     )
 
 
-def _load_business_profile(session_id: str) -> dict | None:
+async def _load_business_profile(session_id: str) -> dict | None:
     """Load the business profile from Turso."""
     try:
-        rows = _turso_query(
+        rows = await _turso_query(
             "SELECT profile_data FROM business_profiles WHERE session_id=?",
             [{"type": "text", "value": session_id}]
         )
         if rows and rows[0].get("profile_data"):
             return json.loads(rows[0]["profile_data"])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("_load_business_profile failed: %s", e)
     return None
 
 
@@ -1160,35 +1175,60 @@ async def _run_checkin_analysis(session_id: str, conversation: list):
                     priorities = result.get("priorities", [])
                     summary = result.get("summary", "")
 
-                    _save_checkin(session_id, conversation, stress_points, wins, priorities, summary)
+                    await _save_checkin(session_id, conversation, stress_points, wins, priorities, summary)
                     if priorities:
-                        _save_card_priorities(session_id, priorities, "checkin")
-                except json.JSONDecodeError:
-                    pass
-    except Exception:
-        pass
+                        await _save_card_priorities(session_id, priorities, "checkin")
+                except json.JSONDecodeError as e:
+                    logger.debug("_run_checkin_analysis JSON parse failed: %s", e)
+    except Exception as e:
+        logger.debug("_run_checkin_analysis failed: %s", e)
 
 
 # ── Check-in chat endpoint ──────────────────────────────────────
+_CHECKIN_TTL_SECONDS = 30 * 60  # 30 minutes
+_CHECKIN_MAX_CONVERSATIONS = 100
+
 @app.post("/api/survey/checkin")
 async def checkin_chat(req: ChatRequest):
     """Daily check-in mode for returning users who completed onboarding."""
-    if not _has_completed_onboarding(req.session_id):
+    if not await _has_completed_onboarding(req.session_id):
         return JSONResponse({"error": "Onboarding not complete", "mode": "onboarding"})
 
-    # Load existing check-in conversation from memory (stored in a separate dict)
-    # or start a new one
-    checkin_key = f"checkin_{req.session_id}"
+    # Initialize the in-memory conversations dict if needed
     if not hasattr(checkin_chat, '_conversations'):
         checkin_chat._conversations = {}
+
+    # TTL cleanup: delete conversations older than 30 minutes
+    now = time.time()
+    expired_keys = [
+        k for k, v in checkin_chat._conversations.items()
+        if now - v.get("_created_at", now) > _CHECKIN_TTL_SECONDS
+    ]
+    for k in expired_keys:
+        del checkin_chat._conversations[k]
+
+    # Max size limit: if exceeded, delete the oldest conversations
+    if len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS:
+        # Sort by creation time and remove oldest
+        sorted_keys = sorted(
+            checkin_chat._conversations.keys(),
+            key=lambda k: checkin_chat._conversations[k].get("_created_at", 0)
+        )
+        # Remove enough to get back under the limit
+        while len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS and sorted_keys:
+            oldest_key = sorted_keys.pop(0)
+            del checkin_chat._conversations[oldest_key]
+
+    # Load existing check-in conversation from memory or start a new one
+    checkin_key = f"checkin_{req.session_id}"
     if checkin_key not in checkin_chat._conversations:
-        checkin_chat._conversations[checkin_key] = {"messages": [], "step": 0}
+        checkin_chat._conversations[checkin_key] = {"messages": [], "step": 0, "_created_at": now}
 
     conv = checkin_chat._conversations[checkin_key]
     conv["messages"].append({"role": "user", "content": req.answer})
     conv["step"] += 1
 
-    system_prompt = _build_checkin_prompt(req.session_id, conv["messages"], conv["step"])
+    system_prompt = await _build_checkin_prompt(req.session_id, conv["messages"], conv["step"])
     messages = [{"role": "system", "content": system_prompt}]
 
     # Send last 4 messages of the check-in conversation
@@ -1289,7 +1329,6 @@ async def checkin_chat(req: ChatRequest):
 
         # Run analysis and save when done
         if is_done:
-            import asyncio
             asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
             # Clear the in-memory conversation
             del checkin_chat._conversations[checkin_key]
@@ -1303,7 +1342,7 @@ async def checkin_chat(req: ChatRequest):
 @app.get("/api/survey/checkin/latest")
 async def get_latest_checkin(session_id: str):
     """Get the latest daily check-in for a session."""
-    checkin = _get_latest_checkin(session_id)
+    checkin = await _get_latest_checkin(session_id)
     if not checkin:
         return JSONResponse({"checkin": None, "message": "No check-ins yet."})
     return checkin
@@ -1312,9 +1351,9 @@ async def get_latest_checkin(session_id: str):
 @app.get("/api/survey/checkin/status")
 async def get_checkin_status(session_id: str):
     """Check if the user should see onboarding or check-in mode."""
-    onboarded = _has_completed_onboarding(session_id)
-    latest = _get_latest_checkin(session_id) if onboarded else None
-    priorities = _get_card_priorities(session_id) if onboarded else []
+    onboarded = await _has_completed_onboarding(session_id)
+    latest = await _get_latest_checkin(session_id) if onboarded else None
+    priorities = await _get_card_priorities(session_id) if onboarded else []
     return {
         "mode": "checkin" if onboarded else "onboarding",
         "onboarded": onboarded,
@@ -1327,13 +1366,13 @@ async def get_checkin_status(session_id: str):
 @app.get("/api/survey/priorities/{session_id}")
 async def get_priorities(session_id: str):
     """Get card priorities for a session."""
-    return {"priorities": _get_card_priorities(session_id)}
+    return {"priorities": await _get_card_priorities(session_id)}
 
 
 @app.get("/api/survey/business-profile/{session_id}")
 async def get_business_profile(session_id: str):
     """Get the business profile (card selection + config + UI density)."""
-    profile = _load_business_profile(session_id)
+    profile = await _load_business_profile(session_id)
     if not profile:
         return JSONResponse({"profile": None, "message": "No business profile yet. Complete onboarding first."})
     return profile
@@ -1341,24 +1380,25 @@ async def get_business_profile(session_id: str):
 
 @app.get("/api/survey/state")
 async def get_state(session_id: str):
-    sess = _load_session(session_id)
+    sess = await _load_session(session_id)
     return _get_state(sess)
 
 
 @app.get("/api/survey/transcript")
 async def get_transcript(session_id: str):
-    sess = _load_session(session_id)
+    sess = await _load_session(session_id)
+    active_questions = _get_questions_for_type(_detect_business_type(sess.get("conversation", [])))
     return {
         "conversation": sess["conversation"],
         "q_index": sess["q_index"],
-        "total_questions": len(QUESTIONS),
-        "questions": QUESTIONS,
+        "total_questions": len(active_questions),
+        "questions": active_questions,
     }
 
 
 @app.post("/api/survey/reset")
 async def reset(session_id: str):
-    _reset_session(session_id)
+    await _reset_session(session_id)
     return {"status": "ok", "message": "Survey reset."}
 
 
@@ -1369,7 +1409,7 @@ async def get_questions():
 
 @app.get("/api/survey/profile/{session_id}")
 async def get_profile(session_id: str):
-    profile = _load_profile(session_id)
+    profile = await _load_profile(session_id)
     if not profile:
         return JSONResponse({"profile": None, "message": "No profile yet."})
     return PlainTextResponse(profile, media_type="text/markdown")
@@ -1377,7 +1417,7 @@ async def get_profile(session_id: str):
 
 @app.get("/api/survey/profiles")
 async def list_profiles():
-    rows = _turso_query(
+    rows = await _turso_query(
         "SELECT session_id, length(profile) as size, updated_at FROM survey_profiles WHERE profile != '' ORDER BY updated_at DESC"
     )
     profiles = [{"session_id": r["session_id"], "size_bytes": r["size"], "modified": r["updated_at"]} for r in rows]
@@ -1396,7 +1436,7 @@ async def health():
 
 @app.on_event("startup")
 async def _startup():
-    init_db()
+    await init_db()
 
 
 # Serve frontend

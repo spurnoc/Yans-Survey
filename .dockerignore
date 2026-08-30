@@ -1,0 +1,36 @@
+# Version control
+.git
+.gitignore
+
+# Python caches and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment and secrets
+.env
+.env.*
+*.db
+
+# Data and logs
+data/
+*.log
+
+# Node (not needed in image)
+node_modules/
+
+# Editor and IDE config
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docs (not needed at runtime)
+*.md
+
+# Docker artifacts
+Dockerfile
+Dockerfile.dev
+.dockerignore

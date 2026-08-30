@@ -679,7 +679,7 @@ function Pill({ tone, children }) {
 }
 
 function Card({ kicker, title, priority, children, footer }) {
-  return React.createElement('div', { className: `card ${priority ? 'priority' : ''}` },
+  return React.createElement('div', { className: `card ${priority ? 'priority' : ''}`, role: 'article', 'aria-label': kicker },
     React.createElement('div', { className: 'card-header' },
       React.createElement('span', { className: 'card-kicker' }, kicker),
       priority ? React.createElement('span', { className: 'card-priority-badge' }, 'Top of mind') : null
@@ -710,7 +710,7 @@ const CARDS = {
         Sparkline({ data: days, label: 'Last 7 days' }),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'View breakdown'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View sales breakdown' }, 'View breakdown'),
         Pill({ tone: 'ok' }, 'Live'),
       ]
     });
@@ -742,7 +742,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {} }, 'Reply to reviews'),
+        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Reply to reviews' }, 'Reply to reviews'),
         Pill({ tone: pending > 0 ? 'warn' : 'ok' }, pending > 0 ? pending + ' pending' : 'All done'),
       ]
     });
@@ -776,7 +776,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Schedule post'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Schedule a social media post' }, 'Schedule post'),
       ]
     });
   },
@@ -810,7 +810,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {} }, 'Follow up'),
+        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Follow up on catering pipeline' }, 'Follow up'),
       ]
     });
   },
@@ -838,7 +838,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Update inventory'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Update inventory schedule' }, 'Update inventory'),
       ]
     });
   },
@@ -869,7 +869,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {} }, 'Start checklist'),
+        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Start the daily checklist' }, 'Start checklist'),
       ]
     });
   },
@@ -901,7 +901,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Set new goal'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Set a new goal' }, 'Set new goal'),
       ]
     });
   },
@@ -915,7 +915,7 @@ const CARDS = {
         React.createElement('p', { style: { color: 'var(--text-muted)', fontSize: '14px' } }, 'Take a moment to check in. What\'s on your mind?'),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => { window.location.href = '/?session=' + getSessionId(); } }, 'Daily check-in'),
+        React.createElement('button', { className: 'card-action primary', onClick: () => { window.location.href = '/?session=' + getSessionId(); }, 'aria-label': 'Start your daily wellbeing check-in' }, 'Daily check-in'),
       ]
     });
   },
@@ -956,7 +956,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Full calendar'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View full appointment calendar' }, 'Full calendar'),
       ]
     });
   },
@@ -999,7 +999,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'View board'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View the job pipeline board' }, 'View board'),
       ]
     });
   },
@@ -1035,7 +1035,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Reach out'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Reach out to at-risk clients' }, 'Reach out'),
       ]
     });
   },
@@ -1070,7 +1070,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Manage tiers'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Manage membership tiers' }, 'Manage tiers'),
       ]
     });
   },
@@ -1109,7 +1109,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Open map'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Open the route map' }, 'Open map'),
       ]
     });
   },
@@ -1146,7 +1146,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Maintenance log'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View equipment maintenance log' }, 'Maintenance log'),
       ]
     });
   },
@@ -1187,7 +1187,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {} }, 'Send reminders'),
+        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Send invoice reminders' }, 'Send reminders'),
       ]
     });
   },
@@ -1227,7 +1227,7 @@ const CARDS = {
         ),
       ],
       footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'View schedule'),
+        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View staff schedule' }, 'View schedule'),
       ]
     });
   },
@@ -1254,7 +1254,7 @@ function App({ data, sessionId }) {
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const mode = data.hasCheckinToday ? 'checkin' : 'onboarding';
 
-  return React.createElement('div', null,
+  return React.createElement('div', { role: 'main', 'aria-label': 'Daily 15 Dashboard' },
     // Header
     React.createElement('div', { className: 'header' },
       React.createElement('div', { className: 'header-brand' },
@@ -1272,7 +1272,7 @@ function App({ data, sessionId }) {
 
     // Check-in summary banner (when available)
     data.checkinSummary
-      ? React.createElement('div', { className: 'checkin-summary-banner' },
+      ? React.createElement('div', { className: 'checkin-summary-banner', role: 'alert', 'aria-live': 'polite' },
           React.createElement('span', { className: 'checkin-summary-icon' }, '📋'),
           React.createElement('div', { className: 'checkin-summary-text' },
             React.createElement('span', { className: 'label' }, 'Today\'s Check-in'),
@@ -1282,7 +1282,7 @@ function App({ data, sessionId }) {
       : null,
 
     // Check-in banner
-    React.createElement('div', { className: 'checkin-banner' },
+    React.createElement('div', { className: 'checkin-banner', role: 'alert', 'aria-live': 'polite' },
       React.createElement('div', { className: 'checkin-banner-text' },
         data.hasCheckinToday
           ? [React.createElement('strong', null, 'Checked in today'), ' — your dashboard reflects today\'s priorities. Come back tomorrow.']
@@ -1291,7 +1291,8 @@ function App({ data, sessionId }) {
       React.createElement('button', {
         className: 'checkin-btn',
         onClick: () => { window.location.href = '/?session=' + sessionId; },
-        style: data.hasCheckinToday ? { opacity: '0.5', cursor: 'default' } : {}
+        style: data.hasCheckinToday ? { opacity: '0.5', cursor: 'default' } : {},
+        'aria-label': data.hasCheckinToday ? 'Check-in already completed today' : 'Start daily check-in'
       }, data.hasCheckinToday ? 'Done today' : 'Check in'),
     ),
 
@@ -1322,7 +1323,7 @@ function App({ data, sessionId }) {
       : null,
 
     // Card grid — each card wrapped in try/catch for error isolation
-    React.createElement('div', { className: 'card-grid' },
+    React.createElement('div', { className: 'card-grid', role: 'region', 'aria-label': 'Business metrics' },
       data.cards.map((cardSpec, i) => {
         const cardFn = CARDS[cardSpec.id];
         if (!cardFn) return null;
@@ -1341,7 +1342,7 @@ function App({ data, sessionId }) {
 // ── Init ────────────────────────────────────────────────────────
 
 function renderSkeletonLoading() {
-  return React.createElement('div', null,
+  return React.createElement('div', { role: 'status', 'aria-live': 'polite', 'aria-label': 'Loading dashboard' },
     React.createElement('div', { className: 'header' },
       React.createElement('div', { className: 'header-brand' },
         React.createElement('div', { className: 'brand-mark' }, 'D15'),
@@ -1375,11 +1376,11 @@ function renderSkeletonLoading() {
 
 function renderErrorState(app, sessionId, retryFn) {
   mount(
-    React.createElement('div', { className: 'error-state' },
+    React.createElement('div', { className: 'error-state', role: 'alert' },
       React.createElement('div', { className: 'error-icon' }, '⚠️'),
       React.createElement('div', { className: 'error-title' }, 'Something went wrong'),
       React.createElement('div', { className: 'error-text' }, 'We couldn\'t load your dashboard. Check your connection and try again.'),
-      React.createElement('button', { className: 'retry-btn', onClick: retryFn }, 'Try again'),
+      React.createElement('button', { className: 'retry-btn', onClick: retryFn, 'aria-label': 'Retry loading the dashboard' }, 'Try again'),
       React.createElement('a', { href: '/', style: { fontSize: '13px', color: 'var(--text-muted)', marginTop: '8px', textDecoration: 'none' } }, 'Back to survey'),
     ),
     app
@@ -1413,7 +1414,7 @@ async function init() {
         React.createElement('div', { className: 'empty-title' }, 'Welcome to Daily 15'),
         React.createElement('div', { className: 'empty-text' }, 'Take a quick survey and we\'ll build your personalized dashboard.'),
         React.createElement('a', { href: '/', style: { textDecoration: 'none' } },
-          React.createElement('button', { className: 'card-action primary' }, 'Get started')
+          React.createElement('button', { className: 'card-action primary', 'aria-label': 'Get started with Daily 15 survey' }, 'Get started')
         )
       ),
       app
@@ -1437,7 +1438,7 @@ async function init() {
           React.createElement('div', { className: 'empty-title' }, 'Survey not started yet'),
           React.createElement('div', { className: 'empty-text' }, 'Take the survey first and your dashboard will be built from your answers.'),
           React.createElement('a', { href: '/?session=' + sessionId, style: { textDecoration: 'none' } },
-            React.createElement('button', { className: 'card-action primary' }, 'Start survey')
+            React.createElement('button', { className: 'card-action primary', 'aria-label': 'Start the survey' }, 'Start survey')
           )
         ),
         app
