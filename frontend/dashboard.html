@@ -958,6 +958,17 @@ function App({ data, sessionId }) {
       )
     ),
 
+    // Check-in summary banner (when available)
+    data.checkinSummary
+      ? React.createElement('div', { className: 'checkin-summary-banner' },
+          React.createElement('span', { className: 'checkin-summary-icon' }, '📋'),
+          React.createElement('div', { className: 'checkin-summary-text' },
+            React.createElement('span', { className: 'label' }, 'Today\'s Check-in'),
+            data.checkinSummary
+          )
+        )
+      : null,
+
     // Check-in banner
     React.createElement('div', { className: 'checkin-banner' },
       React.createElement('div', { className: 'checkin-banner-text' },
@@ -972,13 +983,39 @@ function App({ data, sessionId }) {
       }, data.hasCheckinToday ? 'Done today' : 'Check in'),
     ),
 
+    // Stress points & wins pills (when check-in data exists)
+    data.hasCheckinToday && (data.stressPoints.length > 0 || data.wins.length > 0)
+      ? React.createElement('div', { className: 'checkin-pills-section' },
+          data.stressPoints.length > 0
+            ? React.createElement('div', { className: 'pills-group' },
+                React.createElement('span', { className: 'pills-group-label' }, '⚠️ Stress points'),
+                React.createElement('div', { className: 'pills-row' },
+                  data.stressPoints.map((s, i) =>
+                    React.createElement('span', { key: i, className: 'stress-pill' }, s)
+                  )
+                )
+              )
+            : null,
+          data.wins.length > 0
+            ? React.createElement('div', { className: 'pills-group' },
+                React.createElement('span', { className: 'pills-group-label' }, '✅ Wins'),
+                React.createElement('div', { className: 'pills-row' },
+                  data.wins.map((w, i) =>
+                    React.createElement('span', { key: i, className: 'win-pill' }, w)
+                  )
+                )
+              )
+            : null,
+        )
+      : null,
+
     // Card grid — each card wrapped in try/catch for error isolation
     React.createElement('div', { className: 'card-grid' },
       data.cards.map((cardSpec, i) => {
         const cardFn = CARDS[cardSpec.id];
         if (!cardFn) return null;
         try {
-          const cardVnode = cardFn(cardSpec.config);
+          const cardVnode = cardFn(cardSpec.config, cardSpec.priority);
           return React.createElement('div', { key: cardSpec.id }, cardVnode);
         } catch (e) {
           console.error('Card render error:', cardSpec.id, e);
