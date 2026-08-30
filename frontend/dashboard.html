@@ -919,6 +919,318 @@ const CARDS = {
       ]
     });
   },
+
+  appointments: (config, priority) => {
+    const today = [
+      { time: '9:00 AM', name: 'Kitchen walkthrough — prep review', status: 'done' },
+      { time: '11:30 AM', name: 'Client tasting — wedding quote', status: 'done' },
+      { time: '1:00 PM', name: 'Vendor meeting — produce supplier', status: 'upcoming' },
+      { time: '3:00 PM', name: 'Staff check-in — line cooks', status: 'upcoming' },
+      { time: '4:30 PM', name: 'Phone consult — corporate catering', status: 'gap' },
+    ];
+    const noShows = 1;
+    const gaps = today.filter(a => a.status === 'gap').length;
+    const nextAppt = today.find(a => a.status === 'upcoming');
+    return Card({
+      kicker: 'Appointments',
+      title: nextAppt ? 'Next: ' + nextAppt.time + ' — ' + nextAppt.name : 'No more today',
+      priority,
+      children: [
+        React.createElement('div', { className: 'metric-row' },
+          React.createElement(Metric, { value: today.length, label: 'Today' }),
+          React.createElement(Metric, { value: noShows, label: 'No-shows', tone: noShows > 0 ? 'critical' : 'ok' }),
+          React.createElement(Metric, { value: gaps, label: 'Gaps', tone: gaps > 0 ? 'warn' : 'ok' }),
+        ),
+        React.createElement('div', { className: 'list' },
+          today.slice(0, 4).map((a, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', { className: 'list-item-label' },
+                React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-muted)', marginRight: '8px' } }, a.time),
+                a.name.slice(0, 35) + (a.name.length > 35 ? '...' : '')
+              ),
+              React.createElement('span', null,
+                Pill({ tone: a.status === 'done' ? 'ok' : a.status === 'gap' ? 'warn' : 'muted' }, a.status === 'done' ? 'Done' : a.status === 'gap' ? 'Gap' : 'Soon'),
+              )
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Full calendar'),
+      ]
+    });
+  },
+
+  pipeline: (config, priority) => {
+    const columns = [
+      { label: 'Scheduled', count: 5, tone: 'ok' },
+      { label: 'In Progress', count: 3, tone: 'warn' },
+      { label: 'Completed', count: 12, tone: 'ok' },
+      { label: 'Waiting Parts', count: 2, tone: 'critical' },
+    ];
+    const jobs = [
+      { name: 'Refrigeration unit — walk-in', col: 'In Progress', days: 2 },
+      { name: 'Oven thermostat replacement', col: 'Waiting Parts', days: 4 },
+      { name: 'HVAC filter swap — kitchen', col: 'Completed', days: 0 },
+    ];
+    const total = columns.reduce((s, c) => s + c.count, 0);
+    return Card({
+      kicker: 'Job Pipeline',
+      title: total + ' active jobs across ' + columns.length + ' stages',
+      priority,
+      children: [
+        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' } },
+          columns.map((c, i) =>
+            React.createElement('div', { key: i, style: { padding: '8px', borderRadius: 'var(--radius-sm)', background: 'var(--bg)', textAlign: 'center' } },
+              React.createElement('div', { className: 'metric-value', style: { fontSize: '24px' } }, c.count),
+              React.createElement('div', { className: 'metric-label' }, c.label)
+            )
+          )
+        ),
+        React.createElement('div', { className: 'list' },
+          jobs.map((j, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', { className: 'list-item-label' }, j.name.slice(0, 38) + (j.name.length > 38 ? '...' : '')),
+              React.createElement('span', null,
+                Pill({ tone: j.col === 'Completed' ? 'ok' : j.col === 'Waiting Parts' ? 'critical' : j.col === 'In Progress' ? 'warn' : 'muted' }, j.col),
+              )
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'View board'),
+      ]
+    });
+  },
+
+  retention: (config, priority) => {
+    const clients = [
+      { name: 'Maple Street Co.', visits: 14, lastVisit: '3 days ago', risk: 'low' },
+      { name: 'Brennan & Co.', visits: 3, lastVisit: '6 weeks ago', risk: 'high' },
+      { name: 'Helix Labs', visits: 8, lastVisit: '2 weeks ago', risk: 'medium' },
+    ];
+    const loyaltyRate = 72;
+    const avgReturnDays = 23;
+    const churn = clients.filter(c => c.risk === 'high').length;
+    return Card({
+      kicker: 'Client Retention',
+      title: churn > 0 ? churn + ' client' + (churn > 1 ? 's' : '') + ' at churn risk' : 'Retention looks healthy',
+      priority: priority || churn > 0,
+      children: [
+        React.createElement('div', { className: 'metric-row' },
+          React.createElement(Metric, { value: loyaltyRate + '%', label: 'Loyalty rate', tone: 'ok' }),
+          React.createElement(Metric, { value: avgReturnDays, label: 'Avg return (days)' }),
+          React.createElement(Metric, { value: churn, label: 'Churn risk', tone: churn > 0 ? 'critical' : 'ok' }),
+        ),
+        React.createElement('div', { className: 'list' },
+          clients.map((c, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', { className: 'list-item-label' }, c.name),
+              React.createElement('span', null,
+                Pill({ tone: c.risk === 'low' ? 'ok' : c.risk === 'medium' ? 'warn' : 'critical' }, c.risk + ' risk'),
+              )
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Reach out'),
+      ]
+    });
+  },
+
+  memberships: (config, priority) => {
+    const tiers = [
+      { name: 'Gold — Monthly', members: 84, mrr: 2520 },
+      { name: 'Silver — Monthly', members: 142, mrr: 2130 },
+      { name: 'Trial', members: 18, mrr: 0 },
+    ];
+    const totalMRR = tiers.reduce((s, t) => s + t.mrr, 0);
+    const activeMembers = tiers.reduce((s, t) => s + t.members, 0);
+    const newThisMonth = 12;
+    const churnRate = 3.2;
+    return Card({
+      kicker: 'Memberships',
+      title: '$' + totalMRR.toLocaleString() + ' MRR · ' + activeMembers + ' active members',
+      priority,
+      children: [
+        React.createElement('div', { className: 'metric-row' },
+          React.createElement(Metric, { value: '$' + totalMRR.toLocaleString(), label: 'MRR', tone: 'ok' }),
+          React.createElement(Metric, { value: '+' + newThisMonth, label: 'New this month', tone: 'ok' }),
+          React.createElement(Metric, { value: churnRate + '%', label: 'Churn', tone: churnRate > 5 ? 'critical' : 'warn' }),
+        ),
+        React.createElement('div', { className: 'list' },
+          tiers.map((t, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', { className: 'list-item-label' }, t.name),
+              React.createElement('span', { className: 'list-item-value' }, t.members + ' · $' + t.mrr.toLocaleString())
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Manage tiers'),
+      ]
+    });
+  },
+
+  routes: (config, priority) => {
+    const stops = [
+      { seq: 1, name: 'Warehouse pickup', time: '8:00 AM', done: true },
+      { seq: 2, name: 'Maple Street Co.', time: '9:15 AM', done: true },
+      { seq: 3, name: 'Brennan & Co.', time: '10:30 AM', done: false },
+      { seq: 4, name: 'Helix Labs', time: '11:45 AM', done: false },
+      { seq: 5, name: 'Return — restock', time: '1:00 PM', done: false },
+    ];
+    const completed = stops.filter(s => s.done).length;
+    const pct = Math.round((completed / stops.length) * 100);
+    const driveTimeMin = 94;
+    return Card({
+      kicker: 'Daily Route',
+      title: completed + ' of ' + stops.length + ' stops done · ' + pct + '%',
+      priority,
+      children: [
+        React.createElement('div', { className: 'metric-row' },
+          React.createElement(Metric, { value: stops.length, label: 'Stops' }),
+          React.createElement(Metric, { value: Math.floor(driveTimeMin / 60) + 'h ' + (driveTimeMin % 60) + 'm', label: 'Drive time' }),
+          React.createElement(Metric, { value: pct + '%', label: 'Complete', tone: pct === 100 ? 'ok' : 'warn' }),
+        ),
+        React.createElement('div', { className: 'list' },
+          stops.map((s, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', { className: 'list-item-label', style: s.done ? { textDecoration: 'line-through', color: 'var(--text-muted)' } : {} },
+                React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-muted)', marginRight: '8px' } }, '#' + s.seq),
+                s.name
+              ),
+              React.createElement('span', { className: 'list-item-value' }, s.time)
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Open map'),
+      ]
+    });
+  },
+
+  equipment: (config, priority) => {
+    const items = [
+      { name: 'Walk-in freezer', status: 'ok', note: 'Temp −2°F' },
+      { name: 'Convection oven #2', status: 'warn', note: 'Door seal — service 9/3' },
+      { name: 'Dishwasher (primary)', status: 'ok', note: 'Descale due 9/10' },
+      { name: 'Refrigeration — line', status: 'critical', note: 'Compressor failing' },
+    ];
+    const needsAttention = items.filter(i => i.status !== 'ok').length;
+    return Card({
+      kicker: 'Equipment',
+      title: needsAttention > 0 ? needsAttention + ' item' + (needsAttention > 1 ? 's' : '') + ' need attention' : 'All systems nominal',
+      priority: priority || needsAttention > 0,
+      children: [
+        React.createElement('div', { className: 'metric-row' },
+          React.createElement(Metric, { value: items.length, label: 'Tracked items' }),
+          React.createElement(Metric, { value: needsAttention, label: 'Need attention', tone: needsAttention > 0 ? 'warn' : 'ok' }),
+        ),
+        React.createElement('div', { className: 'list' },
+          items.map((item, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', null,
+                React.createElement('span', { className: 'list-item-label', style: { display: 'block' } }, item.name),
+                React.createElement('span', { className: 'list-item-value', style: { display: 'block' } }, item.note)
+              ),
+              React.createElement('span', null,
+                Pill({ tone: item.status === 'ok' ? 'ok' : item.status === 'warn' ? 'warn' : 'critical' }, item.status)
+              )
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'Maintenance log'),
+      ]
+    });
+  },
+
+  invoices: (config, priority) => {
+    const invoices = [
+      { client: 'Maple Street Co.', amount: '$1,240', status: 'paid', due: '8/20' },
+      { client: 'Brennan & Co.', amount: '$3,800', status: 'overdue', due: '8/10' },
+      { client: 'Helix Labs', amount: '$2,150', status: 'outstanding', due: '9/5' },
+      { client: 'Vertex Group', amount: '$950', status: 'outstanding', due: '9/8' },
+    ];
+    const paid = invoices.filter(i => i.status === 'paid').length;
+    const overdue = invoices.filter(i => i.status === 'overdue').length;
+    const outstanding = invoices.filter(i => i.status === 'outstanding').length;
+    const totalOutstanding = invoices
+      .filter(i => i.status !== 'paid')
+      .reduce((s, i) => s + parseInt(i.amount.replace(/[^0-9]/g, '')), 0);
+    const followUps = invoices.filter(i => i.status === 'overdue' || i.status === 'outstanding');
+    return Card({
+      kicker: 'Invoices',
+      title: overdue > 0 ? overdue + ' overdue invoice' + (overdue > 1 ? 's' : '') + ' — follow up' : 'All current',
+      priority: priority || overdue > 0,
+      children: [
+        React.createElement('div', { className: 'metric-row' },
+          React.createElement(Metric, { value: '$' + totalOutstanding.toLocaleString(), label: 'Outstanding', tone: 'warn' }),
+          React.createElement(Metric, { value: paid, label: 'Paid', tone: 'ok' }),
+          React.createElement(Metric, { value: overdue, label: 'Overdue', tone: overdue > 0 ? 'critical' : 'ok' }),
+        ),
+        React.createElement('div', { className: 'list' },
+          followUps.slice(0, 4).map((inv, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', { className: 'list-item-label' }, inv.client),
+              React.createElement('span', null,
+                Pill({ tone: inv.status === 'overdue' ? 'critical' : 'warn' }, inv.amount + ' · ' + inv.status)
+              )
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action primary', onClick: () => {} }, 'Send reminders'),
+      ]
+    });
+  },
+
+  staff: (config, priority) => {
+    const employees = [
+      { name: 'Marco D.', hours: 42, role: 'Head Chef', commission: 480, gap: false },
+      { name: 'Sarah K.', hours: 38, role: 'Sous Chef', commission: 320, gap: false },
+      { name: 'Devon R.', hours: 28, role: 'Line Cook', commission: 150, gap: true },
+      { name: 'Lena T.', hours: 35, role: 'Pastry', commission: 280, gap: false },
+    ];
+    const totalHours = employees.reduce((s, e) => s + e.hours, 0);
+    const totalCommission = employees.reduce((s, e) => s + e.commission, 0);
+    const coverageGaps = employees.filter(e => e.gap).length;
+    return Card({
+      kicker: 'Staff',
+      title: coverageGaps > 0 ? coverageGaps + ' coverage gap' + (coverageGaps > 1 ? 's' : '') + ' this week' : 'Fully staffed',
+      priority: priority || coverageGaps > 0,
+      children: [
+        React.createElement('div', { className: 'metric-row' },
+          React.createElement(Metric, { value: totalHours, label: 'Total hours' }),
+          React.createElement(Metric, { value: '$' + totalCommission.toLocaleString(), label: 'Commission', tone: 'ok' }),
+          React.createElement(Metric, { value: coverageGaps, label: 'Coverage gaps', tone: coverageGaps > 0 ? 'warn' : 'ok' }),
+        ),
+        React.createElement('div', { className: 'list' },
+          employees.map((e, i) =>
+            React.createElement('div', { key: i, className: 'list-item' },
+              React.createElement('span', null,
+                React.createElement('span', { className: 'list-item-label', style: { display: 'block' } }, e.name + ' · ' + e.role),
+                React.createElement('span', { className: 'list-item-value', style: { display: 'block' } }, e.hours + 'h · $' + e.commission)
+              ),
+              React.createElement('span', null,
+                Pill({ tone: e.gap ? 'warn' : 'ok' }, e.gap ? 'Gap' : 'Covered')
+              )
+            )
+          )
+        ),
+      ],
+      footer: [
+        React.createElement('button', { className: 'card-action', onClick: () => {} }, 'View schedule'),
+      ]
+    });
+  },
 };
 
 // ── Main App ────────────────────────────────────────────────────

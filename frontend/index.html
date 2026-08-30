@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#1a1a1a">
-<title>Yans Deli — Daily 15 Survey</title>
+<title>Daily 15 — Business Survey</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
@@ -313,9 +313,9 @@ textarea{resize:none}
 <div id="app">
   <div class="header">
     <div class="header-brand">
-      <div class="brand-mark">Y</div>
+      <div class="brand-mark">B</div>
       <div>
-        <div class="header-title">Yans Deli</div>
+        <div class="header-title">Daily 15</div>
         <div class="header-sub" id="header-sub">Question 1 of 13</div>
       </div>
     </div>
@@ -342,6 +342,21 @@ let isStreaming = false;
 let currentChoices = null;
 let pendingChoices = null;
 let currentMode = 'onboarding'; // 'onboarding' or 'checkin'
+
+// Business type choices for Q1 — used for new onboarding sessions
+const BUSINESS_TYPES = [
+  'Restaurant / Cafe',
+  'Salon / Spa / Barber',
+  'Plumber / Electrician / HVAC',
+  'Retail / Boutique',
+  'Gym / Fitness Studio',
+  'Landscaping / Lawn Care',
+  'Auto Repair / Detailing',
+  'Cleaning Service',
+  'Photography / Video',
+  'Real Estate',
+  'Other (type your own)',
+];
 
 // Per-browser session ID — each browser gets its own conversation
 let sessionId = localStorage.getItem('survey_session_id');
@@ -399,7 +414,7 @@ async function init() {
       const chat = document.getElementById('chat-area');
       chat.innerHTML = `
         <div class="msg-ai">
-          <div class="msg-ai-bubble">Hey — quick survey about how you run things day to day. No wrong answers, just want to understand your world. First one: <strong>Right now, how do you keep track of all this? Reviews, money, marketing.</strong></div>
+          <div class="msg-ai-bubble">Hey — quick survey about how you run your business day to day. No wrong answers, just want to understand your world. First: <strong>what kind of business do you run?</strong></div>
         </div>`;
       autoScroll();
     }
@@ -412,7 +427,12 @@ async function init() {
       return;
     }
 
-    showInput();
+    // For new onboarding users (qIndex === 0), show business type choices as Q1
+    if (currentMode === 'onboarding' && qIndex === 0) {
+      showInput(BUSINESS_TYPES);
+    } else {
+      showInput();
+    }
   } catch (e) {
     console.error('Init error:', e);
     showInput();
@@ -519,9 +539,9 @@ function showComplete() {
   const div = document.createElement('div');
   div.className = 'complete-screen mode-transition';
   div.innerHTML = `
-    <div class="complete-icon">🍁</div>
+    <div class="complete-icon">✓</div>
     <h2>That's everything</h2>
-    <p>Thanks Benji — this gives us a real picture of where you're at. Here's what your Daily 15 could look like.</p>
+    <p>Your dashboard has been updated with a real picture of where you're at. Here's what your Daily 15 could look like.</p>
     <a href="/dashboard.html?session=${sessionId}" style="display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px">See your Daily 15 →</a>
     <div class="transcript-toggle" onclick="toggleTranscript()" style="margin-top:16px">View full transcript</div>
     <div class="transcript-panel" id="transcript-panel"></div>
@@ -728,7 +748,7 @@ async function loadTranscript() {
       if (msg.role === 'assistant') {
         html += `<div class="t-row"><div class="t-q">AI: ${escapeHtml(msg.content)}</div>`;
         if (i + 1 < conv.length && conv[i + 1].role === 'user') {
-          html += `<div class="t-a">Benji: ${escapeHtml(conv[i + 1].content)}</div>`;
+          html += `<div class="t-a">You: ${escapeHtml(conv[i + 1].content)}</div>`;
           i++;
         }
         html += '</div>';
