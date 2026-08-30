@@ -165,9 +165,15 @@ def init_db():
         stress_points TEXT DEFAULT '[]',
         wins TEXT DEFAULT '[]',
         priorities TEXT DEFAULT '[]',
+        summary TEXT DEFAULT '',
         created_at TEXT DEFAULT (datetime('now'))
     )
     """)
+    # Add summary column if it doesn't exist (for already-deployed databases)
+    try:
+        _turso_execute("ALTER TABLE daily_checkins ADD COLUMN summary TEXT DEFAULT ''")
+    except Exception:
+        pass  # Column already exists
     _turso_execute("""
     CREATE TABLE IF NOT EXISTS card_priorities (
         session_id TEXT PRIMARY KEY,
@@ -285,22 +291,24 @@ def _get_latest_checkin(session_id: str) -> dict | None:
             "stress_points": json.loads(row.get("stress_points") or "[]"),
             "wins": json.loads(row.get("wins") or "[]"),
             "priorities": json.loads(row.get("priorities") or "[]"),
+            "summary": row.get("summary") or "",
             "created_at": row.get("created_at"),
         }
     return None
 
 
-def _save_checkin(session_id: str, conversation: list, stress_points: list, wins: list, priorities: list):
+def _save_checkin(session_id: str, conversation: list, stress_points: list, wins: list, priorities: list, summary: str = ""):
     """Save a daily check-in to Turso."""
     _turso_execute(
-        """INSERT INTO daily_checkins (session_id, conversation, stress_points, wins, priorities, created_at)
-           VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+        """INSERT INTO daily_checkins (session_id, conversation, stress_points, wins, priorities, summary, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, datetime('now'))""",
         [
             {"type": "text", "value": session_id},
             {"type": "text", "value": json.dumps(conversation)},
             {"type": "text", "value": json.dumps(stress_points)},
             {"type": "text", "value": json.dumps(wins)},
             {"type": "text", "value": json.dumps(priorities)},
+            {"type": "text", "value": summary},
         ]
     )
 
@@ -922,11 +930,13 @@ async def _run_checkin_analysis(session_id: str, conversation: list):
                         {"role": "system", "content": (
                             "You analyze a daily check-in conversation with a small business owner. "
                             "Extract: stress_points (things worrying them), wins (things going well), "
-                            "and priorities (card IDs to surface, in order of importance). "
+                            "priorities (card IDs to surface, in order of importance), and a one-sentence summary. "
                             "Available card IDs: sales, reviews, social, catering, inventory, checklist, goals, stress. "
-                            "Respond as JSON: {\"stress_points\": [...], \"wins\": [...], \"priorities\": [...]} "
+                            "Respond as JSON: {\"stress_points\": [...], \"wins\": [...], \"priorities\": [...], \"summary\": \"one sentence here\"} "
                             "Only include priorities that are relevant to what they said. "
-                            "If nothing stressed them, stress_points is empty. If no wins, wins is empty."
+                            "If nothing stressed them, stress_points is empty. If no wins, wins is empty. "
+                            "The summary should be a single natural sentence capturing the overall mood and focus of today's check-in. "
+                            "Example: 'Staffing shortages are the main concern today, but the new Reuben special is selling well.'"
                         )},
                         {"role": "user", "content": f"Check-in conversation:\n{conv_text}"},
                     ],
@@ -949,15 +959,16 @@ async def _run_checkin_analysis(session_id: str, conversation: list):
 
             # Parse JSON from response
             import re as _re
-            json_match = _re.search(r'\{[^}]+\}', content, _re.DOTALL)
+            json_match = _re.search(r'\{.*\}', content, _re.DOTALL)
             if json_match:
                 try:
                     result = json.loads(json_match.group())
                     stress_points = result.get("stress_points", [])
                     wins = result.get("wins", [])
                     priorities = result.get("priorities", [])
+                    summary = result.get("summary", "")
 
-                    _save_checkin(session_id, conversation, stress_points, wins, priorities)
+                    _save_checkin(session_id, conversation, stress_points, wins, priorities, summary)
                     if priorities:
                         _save_card_priorities(session_id, priorities, "checkin")
                 except json.JSONDecodeError:

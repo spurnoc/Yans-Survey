@@ -85,6 +85,33 @@ textarea{resize:none}
 }
 .reset-btn:hover{background:var(--warm-faint);color:var(--warm-dark)}
 
+/* Mode pill */
+.mode-pill{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 10px;border-radius:var(--radius-pill);
+  font-size:10px;font-weight:600;
+  font-family:'JetBrains Mono',monospace;text-transform:uppercase;
+  letter-spacing:0.06em;white-space:nowrap;
+  transition:all .3s;
+}
+.mode-pill::before{
+  content:'';width:5px;height:5px;border-radius:50%;
+  display:inline-block;
+}
+.mode-pill.onboarding{background:var(--accent-soft);color:var(--accent)}
+.mode-pill.onboarding::before{background:var(--accent);animation:pulse 2s infinite}
+.mode-pill.checkin{background:rgba(22,163,74,0.08);color:#16a34a}
+.mode-pill.checkin::before{background:#16a34a}
+
+/* Mode transition animation */
+.mode-transition{
+  animation:modeSwitch .5s cubic-bezier(0.22,1,0.36,1);
+}
+@keyframes modeSwitch{
+  0%{opacity:0;transform:translateY(-8px)}
+  100%{opacity:1;transform:translateY(0)}
+}
+
 /* ── Progress ───────────────────────────────────────── */
 .progress-bar{
   display:flex;gap:4px;padding:0 24px 14px;flex-shrink:0;
@@ -260,11 +287,24 @@ textarea{resize:none}
 @media(max-width:480px){
   #app{max-width:100%}
   .msg-ai,.msg-user{max-width:90%}
-  .header{padding:14px 16px 12px}
+  .header{padding:14px 16px 12px;flex-wrap:wrap;gap:6px}
   .progress-bar{padding:0 16px 12px}
   .chat-area{padding:8px 16px 16px}
   .input-area{padding:10px 16px 16px}
   .header-title{font-size:17px}
+  .mode-pill{font-size:9px;padding:2px 8px}
+  .header-brand{gap:8px}
+  .brand-mark{width:28px;height:28px;font-size:14px}
+}
+@media(max-width:375px){
+  .header-title{font-size:15px}
+  .header-sub{font-size:10px}
+  .reset-btn{font-size:11px;padding:5px 10px}
+  .mode-pill{font-size:8px;padding:2px 6px}
+  .msg-ai-bubble,.msg-user{font-size:13px;padding:11px 14px}
+  .choice-btn{font-size:13px;padding:11px 14px}
+  .text-input{font-size:13.5px;padding:11px 14px}
+  .send-btn{width:42px;height:42px;font-size:16px}
 }
 </style>
 </head>
@@ -279,7 +319,10 @@ textarea{resize:none}
         <div class="header-sub" id="header-sub">Question 1 of 13</div>
       </div>
     </div>
-    <div class="reset-btn" onclick="resetSurvey()">Reset</div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="mode-pill onboarding" id="mode-pill">Onboarding</span>
+      <div class="reset-btn" onclick="resetSurvey()">Reset</div>
+    </div>
   </div>
 
   <div class="progress-bar" id="progress-bar"></div>
@@ -321,11 +364,15 @@ async function init() {
     if (status.mode === 'checkin') {
       // Returning user — check-in mode
       currentMode = 'checkin';
+      updateModePill('checkin');
       const chat = document.getElementById('chat-area');
       const lastCheckin = status.latest_checkin;
       const greeting = lastCheckin
         ? `Welcome back. You checked in on ${new Date(lastCheckin.created_at).toLocaleDateString()}. Ready for today's check-in?`
         : 'Welcome back. Ready for a quick 2-minute check-in?';
+      chat.innerHTML = '';
+      chat.classList.add('mode-transition');
+      setTimeout(() => chat.classList.remove('mode-transition'), 600);
       chat.innerHTML = `
         <div class="msg-ai">
           <div class="msg-ai-bubble">${greeting} What's on your plate today?</div>
@@ -337,6 +384,8 @@ async function init() {
     }
 
     // Onboarding mode
+    currentMode = 'onboarding';
+    updateModePill('onboarding');
     const state = await fetch(`${API}/state?session_id=${sessionId}`).then(r => r.json());
     qIndex = state.q_index || 0;
     totalQuestions = state.total_questions || 13;
@@ -414,6 +463,13 @@ function updateHeader() {
   }
 }
 
+function updateModePill(mode) {
+  const pill = document.getElementById('mode-pill');
+  if (!pill) return;
+  pill.className = `mode-pill ${mode}`;
+  pill.textContent = mode === 'checkin' ? 'Daily Check-in' : 'Onboarding';
+}
+
 function showInput(choices) {
   const area = document.getElementById('input-area');
   currentChoices = choices || null;
@@ -461,7 +517,7 @@ function showThinking() {
 function showComplete() {
   const chat = document.getElementById('chat-area');
   const div = document.createElement('div');
-  div.className = 'complete-screen';
+  div.className = 'complete-screen mode-transition';
   div.innerHTML = `
     <div class="complete-icon">🍁</div>
     <h2>That's everything</h2>
@@ -481,7 +537,7 @@ function showComplete() {
 function showCheckinComplete() {
   const chat = document.getElementById('chat-area');
   const div = document.createElement('div');
-  div.className = 'complete-screen';
+  div.className = 'complete-screen mode-transition';
   div.innerHTML = `
     <div class="complete-icon">✓</div>
     <h2>Check-in done</h2>

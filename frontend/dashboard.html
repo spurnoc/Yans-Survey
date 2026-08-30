@@ -46,6 +46,11 @@ body{
 @keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.5}}
 @keyframes shimmer{0%{background-position:-200% 0}100%{background-position:200% 0}}
+@keyframes cardEntrance{from{opacity:0;transform:translateY(16px) scale(0.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes priorityPulse{0%,100%{box-shadow:0 0 0 3px var(--accent-soft)}50%{box-shadow:0 0 0 6px rgba(214,54,78,0.04)}}
+@keyframes skeletonShimmer{0%{background-position:-300% 0}100%{background-position:300% 0}}
+@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+@keyframes emptyFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
 
 #app{
   max-width:1200px;margin:0 auto;min-height:100vh;
@@ -73,6 +78,24 @@ body{
   border-radius:var(--radius-pill);
 }
 
+/* Mode pill indicator */
+.mode-pill{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:4px 12px;border-radius:var(--radius-pill);
+  font-size:11px;font-weight:600;
+  font-family:var(--font-mono);text-transform:uppercase;
+  letter-spacing:0.08em;white-space:nowrap;
+}
+.mode-pill::before{
+  content:'';width:6px;height:6px;border-radius:50%;
+  display:inline-block;
+}
+.mode-pill.onboarding{background:var(--accent-soft);color:var(--accent)}
+.mode-pill.onboarding::before{background:var(--accent);animation:pulse 2s infinite}
+.mode-pill.checkin{background:rgba(22,163,74,0.08);color:var(--ok)}
+.mode-pill.checkin::before{background:var(--ok)}
+.header-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+
 /* Loading state */
 .loading{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -83,15 +106,64 @@ body{
   animation:pulse 1.2s infinite;
 }
 
+/* Skeleton loading cards */
+.skeleton-grid{
+  display:grid;gap:16px;
+  grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
+}
+.skeleton-card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:20px;display:flex;flex-direction:column;gap:12px;
+}
+.skeleton-line{
+  height:12px;border-radius:6px;
+  background:linear-gradient(90deg,var(--border) 25%,var(--border-strong) 50%,var(--border) 75%);
+  background-size:300% 100%;
+  animation:skeletonShimmer 1.6s infinite;
+}
+.skeleton-line.short{width:40%}
+.skeleton-line.medium{width:65%}
+.skeleton-line.long{width:90%}
+.skeleton-line.title{height:18px;width:55%}
+.skeleton-metric-row{display:flex;gap:24px}
+.skeleton-metric{display:flex;flex-direction:column;gap:6px}
+.skeleton-metric-value{width:60px;height:32px;border-radius:6px;background:linear-gradient(90deg,var(--border) 25%,var(--border-strong) 50%,var(--border) 75%);background-size:300% 100%;animation:skeletonShimmer 1.6s infinite}
+.skeleton-metric-label{width:50px;height:12px;border-radius:6px;background:linear-gradient(90deg,var(--border) 25%,var(--border-strong) 50%,var(--border) 75%);background-size:300% 100%;animation:skeletonShimmer 1.6s infinite}
+
+/* Error state */
+.error-state{
+  text-align:center;padding:48px 20px;
+  display:flex;flex-direction:column;align-items:center;gap:12px;
+  animation:shake .4s;
+}
+.error-icon{
+  width:56px;height:56px;margin:0 auto 4px;
+  border-radius:50%;background:rgba(220,38,38,0.08);
+  display:flex;align-items:center;justify-content:center;
+  font-size:24px;
+}
+.error-title{font-family:var(--font-display);font-size:22px;color:var(--text)}
+.error-text{font-size:14px;color:var(--text-muted);max-width:360px}
+.retry-btn{
+  margin-top:8px;padding:12px 28px;
+  background:var(--text);color:var(--bg);
+  border:none;border-radius:var(--radius-sm);
+  font-size:14px;font-weight:600;cursor:pointer;
+  transition:all .18s;
+}
+.retry-btn:hover{background:var(--accent)}
+
 /* Check-in banner */
 .checkin-banner{
   display:flex;align-items:center;justify-content:space-between;
   padding:16px 20px;background:var(--accent-soft);
   border:1px solid rgba(214,54,78,0.15);
   border-radius:var(--radius);margin-bottom:20px;
-  animation:fadeIn .4s;
+  animation:fadeIn .4s;gap:12px;flex-wrap:wrap;
 }
-.checkin-banner-text{font-size:14px;color:var(--text)}
+.checkin-banner-text{font-size:14px;color:var(--text);flex:1;min-width:200px}
 .checkin-banner-text strong{font-weight:600}
 .checkin-btn{
   padding:10px 20px;background:var(--accent);color:white;
@@ -113,15 +185,100 @@ body{
   border:1px solid var(--border);
   border-radius:var(--radius);
   padding:20px;
-  animation:fadeIn .35s;
-  transition:border-color .2s,box-shadow .2s;
+  animation:cardEntrance .4s cubic-bezier(0.22,1,0.36,1) both;
+  transition:border-color .25s,box-shadow .25s,transform .25s,opacity .25s;
   display:flex;flex-direction:column;gap:12px;
 }
 .card:hover{border-color:var(--border-strong);box-shadow:0 4px 12px rgba(0,0,0,0.04)}
 .card.priority{
   border-color:var(--accent);
-  box-shadow:0 0 0 3px var(--accent-soft);
+  box-shadow:0 0 0 3px var(--accent-soft), 0 4px 20px rgba(214,54,78,0.12);
+  background:linear-gradient(180deg, rgba(214,54,78,0.025) 0%, var(--surface) 35%);
+  animation:cardEntrance .4s cubic-bezier(0.22,1,0.36,1) both,priorityPulse 2.5s ease-in-out infinite .5s;
 }
+
+/* Check-in summary banner */
+.checkin-summary-banner{
+  padding:14px 20px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-left:3px solid var(--accent);
+  border-radius:var(--radius);
+  margin-bottom:16px;
+  animation:fadeIn .4s;
+  display:flex;align-items:center;gap:10px;
+}
+.checkin-summary-icon{
+  font-size:18px;flex-shrink:0;
+}
+.checkin-summary-text{
+  font-size:14px;color:var(--text);line-height:1.5;
+}
+.checkin-summary-text .label{
+  font-family:var(--font-mono);font-size:10px;
+  color:var(--text-muted);text-transform:uppercase;
+  letter-spacing:0.1em;display:block;margin-bottom:2px;
+}
+
+/* Stress points & wins pills section */
+.checkin-pills-section{
+  display:flex;flex-wrap:wrap;gap:12px;
+  margin-bottom:20px;align-items:flex-start;
+}
+.pills-group{
+  display:flex;flex-direction:column;gap:6px;
+}
+.pills-group-label{
+  font-family:var(--font-mono);font-size:10px;
+  color:var(--text-muted);text-transform:uppercase;
+  letter-spacing:0.1em;font-weight:500;
+}
+.pills-row{
+  display:flex;flex-wrap:wrap;gap:6px;
+}
+.stress-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:4px 10px;border-radius:var(--radius-pill);
+  font-size:12px;font-weight:500;
+  background:rgba(220,38,38,0.06);color:var(--critical);
+  border:1px solid rgba(220,38,38,0.12);
+}
+.win-pill{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:4px 10px;border-radius:var(--radius-pill);
+  font-size:12px;font-weight:500;
+  background:rgba(22,163,74,0.06);color:var(--ok);
+  border:1px solid rgba(22,163,74,0.12);
+}
+
+/* Staggered entrance — each card gets a progressive delay */
+.card:nth-child(1){animation-delay:0s}
+.card:nth-child(2){animation-delay:.06s}
+.card:nth-child(3){animation-delay:.12s}
+.card:nth-child(4){animation-delay:.18s}
+.card:nth-child(5){animation-delay:.24s}
+.card:nth-child(6){animation-delay:.30s}
+.card:nth-child(7){animation-delay:.36s}
+.card:nth-child(8){animation-delay:.42s}
+
+/* Fallback card for render errors */
+.card-error-fallback{
+  border:1px dashed var(--border-strong);
+  background:var(--surface-hover);
+  padding:20px;border-radius:var(--radius);
+  display:flex;flex-direction:column;gap:8px;
+  animation:fadeIn .3s;
+}
+.card-error-fallback .card-kicker{color:var(--critical)}
+.card-error-fallback .card-body{font-size:13px;color:var(--text-muted)}
+
+/* Empty state inside a card */
+.card-empty-inner{
+  text-align:center;padding:24px 12px;
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+  color:var(--text-muted);font-size:13px;
+}
+.card-empty-inner-icon{font-size:20px;opacity:0.6}
 
 /* Card header */
 .card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -217,17 +374,78 @@ body{
   text-align:center;padding:48px 20px;
   display:flex;flex-direction:column;align-items:center;gap:12px;
 }
+.empty-illustration{
+  width:120px;height:120px;margin:0 auto 8px;
+  position:relative;
+  animation:emptyFloat 3s ease-in-out infinite;
+}
+.empty-illustration::before{
+  content:'';position:absolute;inset:0;
+  border-radius:50%;
+  background:radial-gradient(circle at 40% 35%,var(--accent-soft) 0%,transparent 70%);
+}
+.empty-illustration::after{
+  content:'';position:absolute;top:50%;left:50%;
+  width:80px;height:80px;transform:translate(-50%,-50%);
+  border:3px solid var(--border-strong);border-radius:24px;
+  background:var(--surface);
+  box-shadow:0 4px 16px rgba(0,0,0,0.04);
+}
+/* Inner grid lines — represents the dashboard grid */
+.empty-illustration-grid{
+  position:absolute;top:50%;left:50%;z-index:1;
+  width:48px;height:36px;transform:translate(-50%,-50%);
+  display:grid;grid-template-columns:1fr 1fr;gap:3px;
+}
+.empty-illustration-grid span{
+  background:var(--border-strong);border-radius:3px;
+}
+.empty-illustration-grid span:nth-child(1){background:var(--accent);opacity:0.5}
+.empty-illustration-grid span:nth-child(2){background:var(--accent);opacity:0.3}
 .empty-icon{font-size:32px}
 .empty-title{font-family:var(--font-display);font-size:22px;color:var(--text)}
 .empty-text{font-size:14px;color:var(--text-muted);max-width:360px}
 
 /* Responsive */
+@media(max-width:768px){
+  .card-grid{grid-template-columns:1fr;gap:12px}
+  .skeleton-grid{grid-template-columns:1fr;gap:12px}
+  .metric-value{font-size:28px}
+  .metric-row{gap:16px}
+}
 @media(max-width:640px){
   #app{padding:16px 12px 32px}
   .card-grid{grid-template-columns:1fr}
+  .skeleton-grid{grid-template-columns:1fr}
   .header-title{font-size:20px}
-  .metric-value{font-size:26px}
-  .header{flex-direction:column;align-items:flex-start}
+  .metric-value{font-size:24px}
+  .metric-row{gap:14px}
+  .header{flex-direction:column;align-items:flex-start;gap:10px}
+  .header-right{width:100%;justify-content:space-between}
+  .checkin-banner{padding:12px 16px}
+  .checkin-banner-text{font-size:13px;min-width:140px}
+  .checkin-btn{padding:8px 16px;font-size:12px}
+  .card{padding:16px}
+  .card-title{font-size:16px}
+  .skeleton-card{padding:16px}
+}
+@media(max-width:375px){
+  #app{padding:12px 8px 28px}
+  .card{padding:14px}
+  .skeleton-card{padding:14px}
+  .metric-value{font-size:22px}
+  .metric-row{flex-direction:row;gap:10px}
+  .card-title{font-size:15px}
+  .header-title{font-size:18px}
+  .brand-mark{width:34px;height:34px;font-size:17px}
+  .checkin-banner{padding:10px 12px;gap:8px}
+  .checkin-banner-text{font-size:12px;min-width:100px}
+  .checkin-btn{padding:7px 14px;font-size:11px}
+  .mode-pill{font-size:10px;padding:3px 8px}
+  .header-date{font-size:11px;padding:6px 12px}
+  .card-kicker{font-size:10px}
+  .list-item-label{font-size:13px}
+  .list-item-value{font-size:12px}
 }
 </style>
 </head>
@@ -315,6 +533,7 @@ function extractBusinessData(transcript, profile, checkinStatus, businessProfile
     cards: [],
     priorities: [],
     hasCheckinToday: false,
+    checkinSummary: '',
   };
 
   // If the backend has already analyzed the survey and selected cards, use that
@@ -344,6 +563,7 @@ function extractBusinessData(transcript, profile, checkinStatus, businessProfile
       data.hasCheckinToday = true;
       data.stressPoints = latest.stress_points || [];
       data.wins = latest.wins || [];
+      data.checkinSummary = latest.summary || '';
     }
     // Reorder cards based on priorities from check-in
     const priorities = checkinStatus.card_priorities || [];
@@ -357,6 +577,12 @@ function extractBusinessData(transcript, profile, checkinStatus, businessProfile
         }
       }
       data.cards = [...prioritized, ...remaining];
+      // Mark prioritized cards with priority flag (top 3)
+      const prioritySet = new Set(priorities.slice(0, 3));
+      data.cards = data.cards.map(c => ({
+        ...c,
+        priority: prioritySet.has(c.id)
+      }));
     }
   }
 
@@ -467,7 +693,7 @@ function Card({ kicker, title, priority, children, footer }) {
 // ── Individual Card Types ───────────────────────────────────────
 
 const CARDS = {
-  sales: (config) => {
+  sales: (config, priority) => {
     const days = [42, 38, 55, 47, 62, 71, 58];
     const today = 71;
     const yesterday = 62;
@@ -475,6 +701,7 @@ const CARDS = {
     return Card({
       kicker: 'Sales · ' + (config.pos || 'POS'),
       title: 'Today at a glance',
+      priority,
       children: [
         React.createElement('div', { className: 'metric-row' },
           React.createElement(Metric, { value: '$' + today + '0', label: 'Today' }),
@@ -489,7 +716,7 @@ const CARDS = {
     });
   },
 
-  reviews: (config) => {
+  reviews: (config, priority) => {
     const reviews = [
       { text: 'Best sandwich in town!', sentiment: 'positive', time: '2h ago' },
       { text: 'Service was slow today', sentiment: 'negative', time: '5h ago', pending: true },
@@ -499,7 +726,7 @@ const CARDS = {
     return Card({
       kicker: 'Reviews · ' + (config.platform || 'Google'),
       title: pending > 0 ? pending + ' review' + (pending > 1 ? 's' : '') + ' need attention' : 'All caught up',
-      priority: pending > 0,
+      priority: priority || pending > 0,
       children: [
         React.createElement('div', { className: 'metric-row' },
           React.createElement(Metric, { value: '4.6', label: 'Avg rating' }),
@@ -521,7 +748,7 @@ const CARDS = {
     });
   },
 
-  social: (config) => {
+  social: (config, priority) => {
     const posts = [
       { caption: 'Today\'s special: Reuben', engagement: 142, posted: true },
       { caption: 'Behind the scenes prep', engagement: 89, posted: true },
@@ -531,6 +758,7 @@ const CARDS = {
     return Card({
       kicker: 'Social · ' + (config.platform || 'Instagram'),
       title: 'Content queue',
+      priority,
       children: [
         React.createElement('div', { className: 'metric-row' },
           React.createElement(Metric, { value: totalEng, label: 'Engagement this week' }),
@@ -553,7 +781,7 @@ const CARDS = {
     });
   },
 
-  catering: (config) => {
+  catering: (config, priority) => {
     const pipeline = [
       { name: 'Office lunch — 15 ppl', status: 'Quote sent', value: '$450', time: '2d ago' },
       { name: 'Birthday party — 30 ppl', status: 'Awaiting reply', value: '$890', time: '5d ago', pending: true },
@@ -564,7 +792,7 @@ const CARDS = {
     return Card({
       kicker: 'Catering · ' + (config.method || 'Email'),
       title: pending > 0 ? pending + ' follow-up' + (pending > 1 ? 's' : '') + ' needed' : 'Pipeline looks good',
-      priority: pending > 0,
+      priority: priority || pending > 0,
       children: [
         React.createElement('div', { className: 'metric-row' },
           React.createElement(Metric, { value: '$' + totalValue.toLocaleString(), label: 'Open pipeline' }),
@@ -587,7 +815,7 @@ const CARDS = {
     });
   },
 
-  inventory: (config) => {
+  inventory: (config, priority) => {
     const items = [
       { name: 'Produce', day: config.days?.find(d => d.includes('Tuesday')) || 'Tuesday', status: 'ok' },
       { name: 'Supplies', day: config.days?.find(d => d.includes('Thursday')) || 'Thursday', status: 'ok' },
@@ -596,6 +824,7 @@ const CARDS = {
     return Card({
       kicker: 'Inventory',
       title: 'Supply schedule',
+      priority,
       children: [
         React.createElement('div', { className: 'list' },
           items.map((item, i) =>
@@ -614,7 +843,7 @@ const CARDS = {
     });
   },
 
-  checklist: (config) => {
+  checklist: (config, priority) => {
     const tasks = [
       { label: 'Check POS from yesterday', done: true },
       { label: 'Reply to new reviews', done: false },
@@ -626,6 +855,7 @@ const CARDS = {
     return Card({
       kicker: 'Daily Checklist',
       title: done + ' of ' + tasks.length + ' done',
+      priority,
       children: [
         React.createElement('div', { className: 'list' },
           tasks.map((t, i) =>
@@ -644,7 +874,7 @@ const CARDS = {
     });
   },
 
-  goals: (config) => {
+  goals: (config, priority) => {
     const goals = [
       { label: 'Monthly catering revenue', current: 3200, target: 5000, unit: '$' },
       { label: 'Review responses', current: 18, target: 25, unit: '' },
@@ -653,6 +883,7 @@ const CARDS = {
     return Card({
       kicker: 'Goals',
       title: 'This month',
+      priority,
       children: [
         React.createElement('div', { className: 'list' },
           goals.map((g, i) => {
@@ -675,10 +906,11 @@ const CARDS = {
     });
   },
 
-  stress: (config) => {
+  stress: (config, priority) => {
     return Card({
       kicker: 'Wellbeing',
       title: 'How are things today?',
+      priority,
       children: [
         React.createElement('p', { style: { color: 'var(--text-muted)', fontSize: '14px' } }, 'Take a moment to check in. What\'s on your mind?'),
       ],
@@ -694,7 +926,12 @@ const CARDS = {
 function App({ data, sessionId }) {
   if (!data || data.cards.length === 0) {
     return React.createElement('div', { className: 'empty' },
-      React.createElement('div', { className: 'empty-icon' }, '📊'),
+      React.createElement('div', { className: 'empty-illustration' },
+        React.createElement('div', { className: 'empty-illustration-grid' },
+          React.createElement('span'), React.createElement('span'),
+          React.createElement('span'), React.createElement('span')
+        )
+      ),
       React.createElement('div', { className: 'empty-title' }, 'No dashboard yet'),
       React.createElement('div', { className: 'empty-text' }, 'Complete the survey first, and your personalized dashboard will appear here.'),
       React.createElement('a', { href: '/?session=' + sessionId, className: 'card-action primary', style: { textDecoration: 'none', marginTop: '8px' } }, 'Take the survey'),
@@ -703,6 +940,7 @@ function App({ data, sessionId }) {
 
   const now = new Date();
   const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const mode = data.hasCheckinToday ? 'checkin' : 'onboarding';
 
   return React.createElement('div', null,
     // Header
@@ -714,7 +952,10 @@ function App({ data, sessionId }) {
           React.createElement('div', { className: 'header-sub' }, data.businessName || 'Your Business'),
         )
       ),
-      React.createElement('div', { className: 'header-date' }, dateStr)
+      React.createElement('div', { className: 'header-right' },
+        React.createElement('span', { className: `mode-pill ${mode}` }, mode === 'checkin' ? 'Daily Check-in' : 'Onboarding'),
+        React.createElement('div', { className: 'header-date' }, dateStr)
+      )
     ),
 
     // Check-in banner
@@ -731,12 +972,18 @@ function App({ data, sessionId }) {
       }, data.hasCheckinToday ? 'Done today' : 'Check in'),
     ),
 
-    // Card grid
+    // Card grid — each card wrapped in try/catch for error isolation
     React.createElement('div', { className: 'card-grid' },
       data.cards.map((cardSpec, i) => {
         const cardFn = CARDS[cardSpec.id];
         if (!cardFn) return null;
-        return React.createElement('div', { key: cardSpec.id }, cardFn(cardSpec.config));
+        try {
+          const cardVnode = cardFn(cardSpec.config);
+          return React.createElement('div', { key: cardSpec.id }, cardVnode);
+        } catch (e) {
+          console.error('Card render error:', cardSpec.id, e);
+          return React.createElement('div', { key: cardSpec.id }, renderCardError(cardSpec.id));
+        }
       })
     )
   );
@@ -744,23 +991,76 @@ function App({ data, sessionId }) {
 
 // ── Init ────────────────────────────────────────────────────────
 
-async function init() {
-  const app = document.getElementById('app');
+function renderSkeletonLoading() {
+  return React.createElement('div', null,
+    React.createElement('div', { className: 'header' },
+      React.createElement('div', { className: 'header-brand' },
+        React.createElement('div', { className: 'brand-mark' }, 'D15'),
+        React.createElement('div', null,
+          React.createElement('div', { className: 'skeleton-line title' }),
+          React.createElement('div', { className: 'skeleton-line short', style: { marginTop: '6px' } }),
+        )
+      ),
+      React.createElement('div', { className: 'skeleton-line medium', style: { height: '28px', borderRadius: '9999px', width: '140px' } })
+    ),
+    React.createElement('div', { className: 'skeleton-grid' },
+      [0, 1, 2, 3, 4, 5].map(i => React.createElement('div', { key: i, className: 'skeleton-card' },
+        React.createElement('div', { className: 'skeleton-line short' }),
+        React.createElement('div', { className: 'skeleton-line title' }),
+        React.createElement('div', { className: 'skeleton-metric-row' },
+          React.createElement('div', { className: 'skeleton-metric' },
+            React.createElement('div', { className: 'skeleton-metric-value' }),
+            React.createElement('div', { className: 'skeleton-metric-label' }),
+          ),
+          React.createElement('div', { className: 'skeleton-metric' },
+            React.createElement('div', { className: 'skeleton-metric-value' }),
+            React.createElement('div', { className: 'skeleton-metric-label' }),
+          )
+        ),
+        React.createElement('div', { className: 'skeleton-line long' }),
+        React.createElement('div', { className: 'skeleton-line long', style: { width: '70%' } }),
+      ))
+    )
+  );
+}
 
-  // Show loading
+function renderErrorState(app, sessionId, retryFn) {
   mount(
-    React.createElement('div', { className: 'loading' },
-      React.createElement('div', { className: 'loading-dot' }),
-      React.createElement('div', { style: { color: 'var(--text-muted)', fontSize: '14px' } }, 'Loading your dashboard...')
+    React.createElement('div', { className: 'error-state' },
+      React.createElement('div', { className: 'error-icon' }, '⚠️'),
+      React.createElement('div', { className: 'error-title' }, 'Something went wrong'),
+      React.createElement('div', { className: 'error-text' }, 'We couldn\'t load your dashboard. Check your connection and try again.'),
+      React.createElement('button', { className: 'retry-btn', onClick: retryFn }, 'Try again'),
+      React.createElement('a', { href: '/', style: { fontSize: '13px', color: 'var(--text-muted)', marginTop: '8px', textDecoration: 'none' } }, 'Back to survey'),
     ),
     app
   );
+}
+
+function renderCardError(cardId) {
+  return React.createElement('div', { className: 'card-error-fallback' },
+    React.createElement('span', { className: 'card-kicker' }, 'Error'),
+    React.createElement('div', { className: 'card-title', style: { fontSize: '15px' } }, 'This card couldn\'t load'),
+    React.createElement('div', { className: 'card-body' }, 'Something went wrong rendering this section. Other cards are unaffected.'),
+  );
+}
+
+async function init() {
+  const app = document.getElementById('app');
+
+  // Show skeleton loading
+  mount(renderSkeletonLoading(), app);
 
   const sessionId = getSessionId();
   if (!sessionId) {
     mount(
       React.createElement('div', { className: 'empty' },
-        React.createElement('div', { className: 'empty-icon' }, '👋'),
+        React.createElement('div', { className: 'empty-illustration' },
+          React.createElement('div', { className: 'empty-illustration-grid' },
+            React.createElement('span'), React.createElement('span'),
+            React.createElement('span'), React.createElement('span')
+          )
+        ),
         React.createElement('div', { className: 'empty-title' }, 'Welcome to Daily 15'),
         React.createElement('div', { className: 'empty-text' }, 'Take a quick survey and we\'ll build your personalized dashboard.'),
         React.createElement('a', { href: '/', style: { textDecoration: 'none' } },
@@ -779,7 +1079,12 @@ async function init() {
     if (data.cards.length === 0 && (!transcript.conversation || transcript.conversation.length === 0)) {
       mount(
         React.createElement('div', { className: 'empty' },
-          React.createElement('div', { className: 'empty-icon' }, '📝'),
+          React.createElement('div', { className: 'empty-illustration' },
+            React.createElement('div', { className: 'empty-illustration-grid' },
+              React.createElement('span'), React.createElement('span'),
+              React.createElement('span'), React.createElement('span')
+            )
+          ),
           React.createElement('div', { className: 'empty-title' }, 'Survey not started yet'),
           React.createElement('div', { className: 'empty-text' }, 'Take the survey first and your dashboard will be built from your answers.'),
           React.createElement('a', { href: '/?session=' + sessionId, style: { textDecoration: 'none' } },
@@ -793,17 +1098,8 @@ async function init() {
 
     mount(React.createElement(App, { data, sessionId }), app);
   } catch (e) {
-    mount(
-      React.createElement('div', { className: 'empty' },
-        React.createElement('div', { className: 'empty-icon' }, '⚠️'),
-        React.createElement('div', { className: 'empty-title' }, 'Something went wrong'),
-        React.createElement('div', { className: 'empty-text' }, 'We couldn\'t load your dashboard. Try refreshing or take the survey again.'),
-        React.createElement('a', { href: '/', style: { textDecoration: 'none' } },
-          React.createElement('button', { className: 'card-action primary' }, 'Back to survey')
-        )
-      ),
-      app
-    );
+    console.error('Dashboard load error:', e);
+    renderErrorState(app, sessionId, () => init());
   }
 }
 
