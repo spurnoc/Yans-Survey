@@ -388,10 +388,13 @@ async function init() {
       chat.innerHTML = '';
       chat.classList.add('mode-transition');
       setTimeout(() => chat.classList.remove('mode-transition'), 600);
-      chat.innerHTML = `
-        <div class="msg-ai">
-          <div class="msg-ai-bubble">${greeting} What's on your plate today?</div>
-        </div>`;
+      const wrapper = document.createElement('div');
+      wrapper.className = 'msg-ai';
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-ai-bubble';
+      bubble.textContent = `${greeting} What's on your plate today?`;
+      wrapper.appendChild(bubble);
+      chat.appendChild(wrapper);
       autoScroll();
       showInput();
       updateHeader();

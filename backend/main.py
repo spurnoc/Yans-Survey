@@ -20,14 +20,19 @@ from fastapi import FastAPI, HTTPException, Header, Body
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import pathlib
 
 app = FastAPI(title="SPUR Survey")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://daily15.spurnoc.com",
+        "https://daily15.spurnoc.com",
+        "http://localhost:8080",
+        "http://localhost:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -588,6 +593,50 @@ class ChatRequest(BaseModel):
     answer: str
     session_id: str
 
+    @field_validator("session_id")
+    @classmethod
+    def validate_session_id(cls, v: str) -> str:
+        if not v:
+            raise ValueError("session_id must not be empty")
+        if len(v) > 100:
+            raise ValueError("session_id must be 100 characters or fewer")
+        if not re.match(r"^[a-zA-Z0-9_-]+$", v):
+            raise ValueError("session_id may only contain alphanumeric characters, hyphens, and underscores")
+        return v
+
+
+# ── Rate limiter (in-memory, per session_id) ─────────────────────
+_RATE_LIMIT_WINDOW = 60          # seconds
+_RATE_LIMIT_MAX_REQUESTS = 20   # per window
+_rate_limit_store: dict[str, list[float]] = {}
+
+
+def _check_rate_limit(session_id: str) -> bool:
+    """Return True if request is within the rate limit, False if exceeded."""
+    now = time.time()
+    window_start = now - _RATE_LIMIT_WINDOW
+
+    # Get or create the timestamp list for this session
+    timestamps = _rate_limit_store.get(session_id, [])
+
+    # Drop timestamps outside the window
+    timestamps = [t for t in timestamps if t > window_start]
+
+    if len(timestamps) >= _RATE_LIMIT_MAX_REQUESTS:
+        _rate_limit_store[session_id] = timestamps  # still update cleaned list
+        return False
+
+    timestamps.append(now)
+    _rate_limit_store[session_id] = timestamps
+
+    # Opportunistic cleanup of other expired sessions to prevent unbounded growth
+    if len(_rate_limit_store) > 1000:
+        expired_keys = [k for k, ts in _rate_limit_store.items() if not any(t > window_start for t in ts)]
+        for k in expired_keys:
+            del _rate_limit_store[k]
+
+    return True
+
 
 # ── Profile / behavioral analysis ─────────────────────────────────
 def _build_analysis_prompt(question_text: str, answer: str, existing_profile: str) -> list[dict]:
@@ -803,8 +852,108 @@ def _parse_response(text: str) -> tuple[str, list[str]]:
     return clean_text, choices
 
 
+# ── Shared SSE LLM streaming helper ──────────────────────────────
+async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int):
+    """Stream an LLM chat completion via SSE.
+
+    Yields SSE ``data:`` lines containing JSON payloads:
+      - ``{"content": "<chunk>"}`` for each streamed token
+      - ``{"error": "<message>"}`` on failure
+
+    Implements the reasoning-model fallback: if streaming yields no
+    ``content`` deltas (some models only emit ``reasoning``), retries
+    as a non-streaming request and emits the full text in 3-char chunks.
+
+    Returns the full assembled response text via the ``StopAsyncIteration``
+    value (accessible as the ``.value`` of the raised ``StopAsyncIteration``
+    when iterated with the low-level protocol). Callers using
+    ``async for`` will instead receive a final sentinel line:
+    ``data: {"_full_response": "<text>"}\\n\\n``.
+    """
+    full_response = ""
+
+    if not SPUR_DEMO_API_KEY:
+        yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
+        return full_response
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
+            async with client.stream(
+                "POST",
+                f"{SPUR_API_BASE}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": 0.6,
+                    "max_tokens": max_tokens,
+                },
+                headers={
+                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
+                    return full_response
+
+                got_content = False
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    if line.strip() == "data: [DONE]":
+                        break
+                    try:
+                        chunk = json.loads(line[6:])
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            got_content = True
+                            full_response += content
+                            yield f"data: {json.dumps({'content': content})}\n\n"
+                    except (json.JSONDecodeError, IndexError):
+                        continue
+
+                # Edge case: reasoning model returned only reasoning, no content
+                if not got_content:
+                    resp2 = await client.post(
+                        f"{SPUR_API_BASE}/chat/completions",
+                        json={
+                            "model": model,
+                            "messages": messages,
+                            "stream": False,
+                            "temperature": 0.6,
+                            "max_tokens": max_tokens,
+                        },
+                        headers={
+                            "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    if resp2.status_code == 200:
+                        msg = resp2.json()["choices"][0]["message"]
+                        full_response = msg.get("content") or ""
+                        if not full_response and msg.get("reasoning"):
+                            full_response = msg["reasoning"]
+                        if full_response:
+                            for i in range(0, len(full_response), 3):
+                                yield f"data: {json.dumps({'content': full_response[i:i+3]})}\n\n"
+
+    except Exception as e:
+        yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
+
+    return full_response
+
+
 @app.post("/api/survey/chat")
 async def chat(req: ChatRequest):
+    if not _check_rate_limit(req.session_id):
+        return JSONResponse(
+            {"error": "Rate limit exceeded. Please slow down."},
+            status_code=429,
+        )
+
     sess = await _load_session(req.session_id)
 
     # Detect business type and get the right questions for this session
@@ -851,79 +1000,16 @@ async def chat(req: ChatRequest):
         )})
 
     async def sse_stream():
+        # Stream the LLM response via the shared helper
+        gen = _stream_llm_response(messages, SURVEY_MODEL, max_tokens=1200)
         full_response = ""
-
-        if not SPUR_DEMO_API_KEY:
-            yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
-            return
-
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
-                async with client.stream(
-                    "POST",
-                    f"{SPUR_API_BASE}/chat/completions",
-                    json={
-                        "model": SURVEY_MODEL,
-                        "messages": messages,
-                        "stream": True,
-                        "temperature": 0.6,
-                        "max_tokens": 1200,
-                    },
-                    headers={
-                        "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
-                        return
-
-                    got_content = False
-                    async for line in resp.aiter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        if line.strip() == "data: [DONE]":
-                            break
-                        try:
-                            chunk = json.loads(line[6:])
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content")
-                            if content:
-                                got_content = True
-                                full_response += content
-                                yield f"data: {json.dumps({'content': content})}\n\n"
-                        except (json.JSONDecodeError, IndexError):
-                            continue
-
-                    # Edge case: reasoning model returned only reasoning, no content
-                    if not got_content:
-                        resp2 = await client.post(
-                            f"{SPUR_API_BASE}/chat/completions",
-                            json={
-                                "model": SURVEY_MODEL,
-                                "messages": messages,
-                                "stream": False,
-                                "temperature": 0.6,
-                                "max_tokens": 1200,
-                            },
-                            headers={
-                                "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
-                                "Content-Type": "application/json",
-                            },
-                        )
-                        if resp2.status_code == 200:
-                            msg = resp2.json()["choices"][0]["message"]
-                            full_response = msg.get("content") or ""
-                            if not full_response and msg.get("reasoning"):
-                                full_response = msg["reasoning"]
-                            if full_response:
-                                for i in range(0, len(full_response), 3):
-                                    yield f"data: {json.dumps({'content': full_response[i:i+3]})}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
-            return
+            async for chunk in gen:
+                if chunk.startswith("data: {") and '"content"' in chunk:
+                    full_response += json.loads(chunk[6:])["content"]
+                yield chunk
+        except StopAsyncIteration as stop:
+            full_response = stop.value or ""
 
         # Parse choices from the response
         clean_text, choices = _parse_response(full_response)
@@ -1191,6 +1277,12 @@ _CHECKIN_MAX_CONVERSATIONS = 100
 @app.post("/api/survey/checkin")
 async def checkin_chat(req: ChatRequest):
     """Daily check-in mode for returning users who completed onboarding."""
+    if not _check_rate_limit(req.session_id):
+        return JSONResponse(
+            {"error": "Rate limit exceeded. Please slow down."},
+            status_code=429,
+        )
+
     if not await _has_completed_onboarding(req.session_id):
         return JSONResponse({"error": "Onboarding not complete", "mode": "onboarding"})
 
@@ -1247,79 +1339,16 @@ async def checkin_chat(req: ChatRequest):
     total_steps = 5
 
     async def sse_stream():
+        # Stream the LLM response via the shared helper
+        gen = _stream_llm_response(messages, SURVEY_MODEL, max_tokens=800)
         full_response = ""
-
-        if not SPUR_DEMO_API_KEY:
-            yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
-            return
-
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
-                async with client.stream(
-                    "POST",
-                    f"{SPUR_API_BASE}/chat/completions",
-                    json={
-                        "model": SURVEY_MODEL,
-                        "messages": messages,
-                        "stream": True,
-                        "temperature": 0.6,
-                        "max_tokens": 800,
-                    },
-                    headers={
-                        "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
-                        "Content-Type": "application/json",
-                    },
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
-                        return
-
-                    got_content = False
-                    async for line in resp.aiter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        if line.strip() == "data: [DONE]":
-                            break
-                        try:
-                            chunk = json.loads(line[6:])
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content")
-                            if content:
-                                got_content = True
-                                full_response += content
-                                yield f"data: {json.dumps({'content': content})}\n\n"
-                        except (json.JSONDecodeError, IndexError):
-                            continue
-
-                    # Fallback for reasoning models
-                    if not got_content:
-                        resp2 = await client.post(
-                            f"{SPUR_API_BASE}/chat/completions",
-                            json={
-                                "model": SURVEY_MODEL,
-                                "messages": messages,
-                                "stream": False,
-                                "temperature": 0.6,
-                                "max_tokens": 800,
-                            },
-                            headers={
-                                "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
-                                "Content-Type": "application/json",
-                            },
-                        )
-                        if resp2.status_code == 200:
-                            msg = resp2.json()["choices"][0]["message"]
-                            full_response = msg.get("content") or ""
-                            if not full_response and msg.get("reasoning"):
-                                full_response = msg["reasoning"]
-                            if full_response:
-                                for i in range(0, len(full_response), 3):
-                                    yield f"data: {json.dumps({'content': full_response[i:i+3]})}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
-            return
+            async for chunk in gen:
+                if chunk.startswith("data: {") and '"content"' in chunk:
+                    full_response += json.loads(chunk[6:])["content"]
+                yield chunk
+        except StopAsyncIteration as stop:
+            full_response = stop.value or ""
 
         # Add AI response to conversation
         conv["messages"].append({"role": "assistant", "content": full_response})
