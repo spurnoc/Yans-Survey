@@ -744,10 +744,168 @@ async def chat(req: ChatRequest):
                 _send_transcript_email(sess)
             except Exception:
                 pass  # best-effort
+            # Run card selection engine in background
+            try:
+                asyncio.create_task(_run_card_selection(sess["session_id"]))
+            except Exception:
+                pass
 
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+
+# ── Card selection engine ────────────────────────────────────────
+AVAILABLE_CARDS = [
+    {"id": "sales", "name": "Sales Tracker", "description": "Daily revenue, POS summary, trend vs yesterday"},
+    {"id": "reviews", "name": "Review Monitor", "description": "Google/TripAdvisor reviews, sentiment, pending replies"},
+    {"id": "social", "name": "Social Pulse", "description": "Instagram/Facebook engagement, posting cadence"},
+    {"id": "catering", "name": "Catering Pipeline", "description": "Open quotes, follow-ups, pipeline value"},
+    {"id": "inventory", "name": "Inventory Tracker", "description": "Supply schedule, low stock alerts"},
+    {"id": "staff", "name": "Staff & Labor", "description": "Hours, costs, coverage gaps"},
+    {"id": "expenses", "name": "Expense Tracker", "description": "Food costs, overhead, margins"},
+    {"id": "checklist", "name": "Daily Checklist", "description": "Morning routine, prep list, priorities"},
+    {"id": "goals", "name": "Goal Tracker", "description": "Monthly targets, progress bars"},
+    {"id": "stress", "name": "Wellbeing", "description": "Daily check-in prompt, stress trends"},
+    {"id": "contacts", "name": "Customer Contacts", "description": "Email/phone list builder"},
+    {"id": "decisions", "name": "Decision Helper", "description": "Second opinion for recurring decisions"},
+]
+
+async def _run_card_selection(session_id: str):
+    """Analyze onboarding answers and determine which cards to show,
+    card configurations, and UI density. Saves result to Turso."""
+    try:
+        # Load the full onboarding conversation
+        sess = _load_session(session_id)
+        conv = sess["conversation"]
+        conv_text = "\n".join(
+            f"{'AI' if m['role']=='assistant' else 'Owner'}: {m['content']}"
+            for m in conv
+        )
+
+        # Load behavioral profile
+        profile = _load_profile(session_id)
+
+        # Build the card list for the LLM
+        card_list = "\n".join(
+            f"- {c['id']}: {c['name']} — {c['description']}"
+            for c in AVAILABLE_CARDS
+        )
+
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(
+                f"{SPUR_API_BASE}/chat/completions",
+                json={
+                    "model": ANALYSIS_MODEL,
+                    "messages": [
+                        {"role": "system", "content": (
+                            "You are a dashboard configuration engine. You analyze a business owner's survey answers "
+                            "and determine which dashboard cards they need, how each card should be configured, "
+                            "and what UI density fits their tech comfort level.\n\n"
+                            "Available cards:\n" + card_list + "\n\n"
+                            "Respond as JSON with this structure:\n"
+                            '{"cards": [{"id": "card_id", "config": {"key": "value"}}], '
+                            '"ui_density": "simple|standard|detailed", '
+                            '"business_name": "extracted business name", '
+                            '"business_type": "restaurant|salon|plumber|etc"}\n\n'
+                            "Rules:\n"
+                            "- Only include cards relevant to what they actually mentioned\n"
+                            "- Always include 'checklist' and 'goals' (universal)\n"
+                            "- Include 'stress' if they mentioned wanting a dashboard or feeling overwhelmed\n"
+                            "- config should contain specifics they mentioned (pos system name, platform name, etc)\n"
+                            "- ui_density: 'simple' if they track things in their head or are tech-averse, "
+                            "'detailed' if they use spreadsheets/analytics, 'standard' otherwise\n"
+                            "- business_name: extract from conversation if mentioned, otherwise 'Your Business'\n"
+                            "- Respond with ONLY the JSON, no other text"
+                        )},
+                        {"role": "user", "content": (
+                            f"Behavioral profile:\n{profile[:800] if profile else 'None yet'}\n\n"
+                            f"Survey conversation:\n{conv_text}"
+                        )},
+                    ],
+                    "stream": False,
+                    "temperature": 0.2,
+                    "max_tokens": 800,
+                },
+                headers={
+                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                return
+
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if not content and msg.get("reasoning"):
+                content = msg["reasoning"]
+
+            # Parse JSON from response
+            import re as _re
+            # Find the JSON object in the response
+            json_match = _re.search(r'\{.*\}', content, _re.DOTALL)
+            if not json_match:
+                return
+
+            try:
+                result = json.loads(json_match.group())
+            except json.JSONDecodeError:
+                return
+
+            cards = result.get("cards", [])
+            ui_density = result.get("ui_density", "standard")
+            business_name = result.get("business_name", "Your Business")
+            business_type = result.get("business_type", "general")
+
+            # Save to Turso as a business profile entry
+            _save_business_profile(session_id, {
+                "cards": cards,
+                "ui_density": ui_density,
+                "business_name": business_name,
+                "business_type": business_type,
+            })
+
+            # Also save initial card priorities (same order as selected)
+            initial_priorities = [c["id"] for c in cards]
+            _save_card_priorities(session_id, initial_priorities, "onboarding")
+
+    except Exception:
+        pass
+
+
+def _save_business_profile(session_id: str, profile_data: dict):
+    """Save the business profile (card selection + config) to Turso."""
+    _turso_execute(
+        """CREATE TABLE IF NOT EXISTS business_profiles (
+            session_id TEXT PRIMARY KEY,
+            profile_data TEXT DEFAULT '{}',
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
+    _turso_execute(
+        """INSERT OR REPLACE INTO business_profiles (session_id, profile_data, updated_at)
+           VALUES (?, ?, datetime('now'))""",
+        [
+            {"type": "text", "value": session_id},
+            {"type": "text", "value": json.dumps(profile_data)},
+        ]
+    )
+
+
+def _load_business_profile(session_id: str) -> dict | None:
+    """Load the business profile from Turso."""
+    try:
+        rows = _turso_query(
+            "SELECT profile_data FROM business_profiles WHERE session_id=?",
+            [{"type": "text", "value": session_id}]
+        )
+        if rows and rows[0].get("profile_data"):
+            return json.loads(rows[0]["profile_data"])
+    except Exception:
+        pass
+    return None
 
 
 # ── Check-in analysis (extract stress points, wins, priorities) ──
@@ -967,6 +1125,15 @@ async def get_checkin_status(session_id: str):
 async def get_priorities(session_id: str):
     """Get card priorities for a session."""
     return {"priorities": _get_card_priorities(session_id)}
+
+
+@app.get("/api/survey/business-profile/{session_id}")
+async def get_business_profile(session_id: str):
+    """Get the business profile (card selection + config + UI density)."""
+    profile = _load_business_profile(session_id)
+    if not profile:
+        return JSONResponse({"profile": None, "message": "No business profile yet. Complete onboarding first."})
+    return profile
 
 
 @app.get("/api/survey/state")
