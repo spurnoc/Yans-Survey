@@ -298,6 +298,7 @@ let totalQuestions = 13;
 let isStreaming = false;
 let currentChoices = null;
 let pendingChoices = null;
+let currentMode = 'onboarding'; // 'onboarding' or 'checkin'
 
 // Per-browser session ID — each browser gets its own conversation
 let sessionId = localStorage.getItem('survey_session_id');
@@ -314,6 +315,28 @@ function autoScroll() {
 
 async function init() {
   try {
+    // Check if user has completed onboarding
+    const status = await fetch(`${API}/checkin/status?session_id=${sessionId}`).then(r => r.json());
+
+    if (status.mode === 'checkin') {
+      // Returning user — check-in mode
+      currentMode = 'checkin';
+      const chat = document.getElementById('chat-area');
+      const lastCheckin = status.latest_checkin;
+      const greeting = lastCheckin
+        ? `Welcome back. You checked in on ${new Date(lastCheckin.created_at).toLocaleDateString()}. Ready for today's check-in?`
+        : 'Welcome back. Ready for a quick 2-minute check-in?';
+      chat.innerHTML = `
+        <div class="msg-ai">
+          <div class="msg-ai-bubble">${greeting} What's on your plate today?</div>
+        </div>`;
+      autoScroll();
+      showInput();
+      updateHeader();
+      return;
+    }
+
+    // Onboarding mode
     const state = await fetch(`${API}/state?session_id=${sessionId}`).then(r => r.json());
     qIndex = state.q_index || 0;
     totalQuestions = state.total_questions || 13;
@@ -327,7 +350,7 @@ async function init() {
       const chat = document.getElementById('chat-area');
       chat.innerHTML = `
         <div class="msg-ai">
-          <div class="msg-ai-bubble">Hey Benji — quick survey about how you run things day to day. No wrong answers, just want to understand your world. First one: <strong>Right now, how do you keep track of all this? Reviews, money, marketing.</strong></div>
+          <div class="msg-ai-bubble">Hey — quick survey about how you run things day to day. No wrong answers, just want to understand your world. First one: <strong>Right now, how do you keep track of all this? Reviews, money, marketing.</strong></div>
         </div>`;
       autoScroll();
     }
@@ -455,6 +478,23 @@ function showComplete() {
   loadTranscript();
 }
 
+function showCheckinComplete() {
+  const chat = document.getElementById('chat-area');
+  const div = document.createElement('div');
+  div.className = 'complete-screen';
+  div.innerHTML = `
+    <div class="complete-icon">✓</div>
+    <h2>Check-in done</h2>
+    <p>Your dashboard has been updated with today's priorities. See you tomorrow.</p>
+    <a href="/dashboard.html?session=${sessionId}" style="display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px">Go to dashboard →</a>
+  `;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+  autoScroll();
+  document.getElementById('input-area').innerHTML = '';
+  document.getElementById('header-sub').textContent = 'Check-in complete';
+}
+
 async function submitAnswer(answer) {
   if (isStreaming) return;
   isStreaming = true;
@@ -467,6 +507,9 @@ async function submitAnswer(answer) {
   chat.appendChild(userMsg);
   chat.scrollTop = chat.scrollHeight;
   autoScroll();
+
+  // Route to the right endpoint based on mode
+  const endpoint = currentMode === 'checkin' ? `${API}/checkin` : `${API}/chat`;
 
   showThinking();
 
@@ -482,7 +525,7 @@ async function submitAnswer(answer) {
   autoScroll();
 
   try {
-    const resp = await fetch(API + '/chat', {
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answer, session_id: sessionId }),
@@ -528,7 +571,11 @@ async function submitAnswer(answer) {
             pendingChoices = data.choices;
           }
           if (data.done) {
-            setTimeout(() => showComplete(), 1500);
+            if (currentMode === 'checkin') {
+              setTimeout(() => showCheckinComplete(), 1500);
+            } else {
+              setTimeout(() => showComplete(), 1500);
+            }
           }
         } catch {}
       }

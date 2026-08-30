@@ -279,15 +279,20 @@ function getSessionId() {
 }
 
 async function fetchData(sessionId) {
-  const [transcriptResp, profileResp] = await Promise.all([
+  const [transcriptResp, profileResp, checkinStatusResp] = await Promise.all([
     fetch(`${API}/transcript?session_id=${sessionId}`).then(r => r.json()),
     fetch(`${API}/profile/${sessionId}`).then(r => r.ok ? r.text() : ''),
+    fetch(`${API}/checkin/status?session_id=${sessionId}`).then(r => r.json()),
   ]);
-  return { transcript: transcriptResp, profile: profileResp || '' };
+  return {
+    transcript: transcriptResp,
+    profile: profileResp || '',
+    checkinStatus: checkinStatusResp || {},
+  };
 }
 
 // ── Card data extraction (from survey answers) ─────────────────
-function extractBusinessData(transcript, profile) {
+function extractBusinessData(transcript, profile, checkinStatus) {
   const conv = transcript.conversation || [];
   const answers = conv.filter(m => m.role === 'user').map(m => m.content.toLowerCase());
   const allText = answers.join(' ');
@@ -303,8 +308,10 @@ function extractBusinessData(transcript, profile) {
     techComfort: 'medium',
     uiDensity: 'standard',
     stressPoints: [],
+    wins: [],
     cards: [],
     priorities: [],
+    hasCheckinToday: false,
   };
 
   // Detect POS system
@@ -364,6 +371,30 @@ function extractBusinessData(transcript, profile) {
   // If they said they want a dashboard
   if (allText.includes('dashboard') || allText.includes('keep track')) {
     data.cards.push({ id: 'stress', config: {} });
+  }
+
+  // Apply check-in data
+  if (checkinStatus) {
+    const latest = checkinStatus.latest_checkin;
+    if (latest) {
+      data.hasCheckinToday = true;
+      data.stressPoints = latest.stress_points || [];
+      data.wins = latest.wins || [];
+    }
+    // Reorder cards based on priorities from check-in
+    const priorities = checkinStatus.card_priorities || [];
+    if (priorities.length > 0) {
+      // Move priority cards to front, keep others after
+      const prioritized = [];
+      const remaining = [...data.cards];
+      for (const pid of priorities) {
+        const idx = remaining.findIndex(c => c.id === pid);
+        if (idx >= 0) {
+          prioritized.push(remaining.splice(idx, 1)[0]);
+        }
+      }
+      data.cards = [...prioritized, ...remaining];
+    }
   }
 
   return data;
@@ -664,10 +695,15 @@ function App({ data, sessionId }) {
     // Check-in banner
     React.createElement('div', { className: 'checkin-banner' },
       React.createElement('div', { className: 'checkin-banner-text' },
-        React.createElement('strong', null, 'Daily check-in'),
-        ' — 2 minutes to set your priorities for today.'
+        data.hasCheckinToday
+          ? [React.createElement('strong', null, 'Checked in today'), ' — your dashboard reflects today\'s priorities. Come back tomorrow.']
+          : [React.createElement('strong', null, 'Daily check-in'), ' — 2 minutes to set your priorities for today.']
       ),
-      React.createElement('button', { className: 'checkin-btn', onClick: () => { window.location.href = '/?session=' + sessionId; } }, 'Check in'),
+      React.createElement('button', {
+        className: 'checkin-btn',
+        onClick: () => { window.location.href = '/?session=' + sessionId; },
+        style: data.hasCheckinToday ? { opacity: '0.5', cursor: 'default' } : {}
+      }, data.hasCheckinToday ? 'Done today' : 'Check in'),
     ),
 
     // Card grid
@@ -712,8 +748,8 @@ async function init() {
   }
 
   try {
-    const { transcript, profile } = await fetchData(sessionId);
-    const data = extractBusinessData(transcript, profile);
+    const { transcript, profile, checkinStatus } = await fetchData(sessionId);
+    const data = extractBusinessData(transcript, profile, checkinStatus);
 
     if (data.cards.length === 0 && (!transcript.conversation || transcript.conversation.length === 0)) {
       mount(

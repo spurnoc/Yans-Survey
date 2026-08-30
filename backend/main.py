@@ -157,6 +157,25 @@ def init_db():
         updated_at TEXT DEFAULT (datetime('now'))
     )
     """)
+    _turso_execute("""
+    CREATE TABLE IF NOT EXISTS daily_checkins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        conversation TEXT DEFAULT '[]',
+        stress_points TEXT DEFAULT '[]',
+        wins TEXT DEFAULT '[]',
+        priorities TEXT DEFAULT '[]',
+        created_at TEXT DEFAULT (datetime('now'))
+    )
+    """)
+    _turso_execute("""
+    CREATE TABLE IF NOT EXISTS card_priorities (
+        session_id TEXT PRIMARY KEY,
+        ordered_cards TEXT DEFAULT '[]',
+        last_updated_by TEXT DEFAULT 'onboarding',
+        updated_at TEXT DEFAULT (datetime('now'))
+    )
+    """)
 
 
 def _load_session(session_id: str) -> dict:
@@ -240,6 +259,140 @@ def _get_state(sess: dict) -> dict:
         "conversation": sess["conversation"],
         "current_question": QUESTIONS[sess["q_index"]] if sess["q_index"] < len(QUESTIONS) else None,
     }
+
+
+# ── Daily check-in helpers ───────────────────────────────────────
+def _has_completed_onboarding(session_id: str) -> bool:
+    """Check if this session has completed the onboarding survey."""
+    rows = _turso_query(
+        "SELECT q_index FROM survey_sessions WHERE session_id=?",
+        [{"type": "text", "value": session_id}]
+    )
+    return rows and int(rows[0].get("q_index", 0)) >= len(QUESTIONS)
+
+
+def _get_latest_checkin(session_id: str) -> dict | None:
+    """Get the most recent daily check-in for a session."""
+    rows = _turso_query(
+        "SELECT * FROM daily_checkins WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
+        [{"type": "text", "value": session_id}]
+    )
+    if rows:
+        row = rows[0]
+        return {
+            "id": row.get("id"),
+            "conversation": json.loads(row.get("conversation") or "[]"),
+            "stress_points": json.loads(row.get("stress_points") or "[]"),
+            "wins": json.loads(row.get("wins") or "[]"),
+            "priorities": json.loads(row.get("priorities") or "[]"),
+            "created_at": row.get("created_at"),
+        }
+    return None
+
+
+def _save_checkin(session_id: str, conversation: list, stress_points: list, wins: list, priorities: list):
+    """Save a daily check-in to Turso."""
+    _turso_execute(
+        """INSERT INTO daily_checkins (session_id, conversation, stress_points, wins, priorities, created_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+        [
+            {"type": "text", "value": session_id},
+            {"type": "text", "value": json.dumps(conversation)},
+            {"type": "text", "value": json.dumps(stress_points)},
+            {"type": "text", "value": json.dumps(wins)},
+            {"type": "text", "value": json.dumps(priorities)},
+        ]
+    )
+
+
+def _get_card_priorities(session_id: str) -> list:
+    """Get the current card priority ordering for a session."""
+    rows = _turso_query(
+        "SELECT ordered_cards FROM card_priorities WHERE session_id=?",
+        [{"type": "text", "value": session_id}]
+    )
+    if rows and rows[0].get("ordered_cards"):
+        return json.loads(rows[0]["ordered_cards"])
+    return []
+
+
+def _save_card_priorities(session_id: str, ordered_cards: list, updated_by: str = "checkin"):
+    """Save or update card priorities for a session."""
+    _turso_execute(
+        """INSERT OR REPLACE INTO card_priorities (session_id, ordered_cards, last_updated_by, updated_at)
+           VALUES (?, ?, ?, datetime('now'))""",
+        [
+            {"type": "text", "value": session_id},
+            {"type": "text", "value": json.dumps(ordered_cards)},
+            {"type": "text", "value": updated_by},
+        ]
+    )
+
+
+# ── Check-in system prompt ───────────────────────────────────────
+def _build_checkin_prompt(session_id: str, conversation: list, checkin_step: int) -> str:
+    # Load business profile (behavioral) for context
+    profile = _load_profile(session_id)
+    profile_section = ""
+    if profile:
+        if len(profile) > 800:
+            profile = profile[-800:]
+        profile_section = f"\nBEHAVIORAL PROFILE (how this person communicates and thinks):\n{profile}\n"
+
+    # Load onboarding answers for context
+    sess_rows = _turso_query(
+        "SELECT conversation FROM survey_sessions WHERE session_id=?",
+        [{"type": "text", "value": session_id}]
+    )
+    onboarding_summary = ""
+    if sess_rows and sess_rows[0].get("conversation"):
+        conv = json.loads(sess_rows[0]["conversation"])
+        answers = [m["content"] for m in conv if m["role"] == "user"]
+        onboarding_summary = "What they told us during onboarding:\n" + "\n".join(f"- {a[:100]}" for a in answers[:5]) + "\n"
+
+    # Load last check-in for continuity
+    last_checkin = _get_latest_checkin(session_id)
+    last_checkin_section = ""
+    if last_checkin:
+        last_stress = last_checkin["stress_points"]
+        last_wins = last_checkin["wins"]
+        if last_stress:
+            last_checkin_section += f"\nLast check-in stress points: {', '.join(last_stress)}\n"
+        if last_wins:
+            last_checkin_section += f"Last check-in wins: {', '.join(last_wins)}\n"
+        last_checkin_section += f"(Last check-in was on {last_checkin['created_at']})\n"
+
+    # Check-in questions flow (3-5 short questions)
+    CHECKIN_QUESTIONS = [
+        "Ask how their day is going. Keep it casual.",
+        "Ask what's on their plate today — what's the main thing they're dealing with?",
+        "Ask if anything is stressing them out right now. If they mentioned stress last time, ask how that went.",
+        "Ask if they had any wins since last time — anything go well?",
+        "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
+    ]
+
+    current_q = CHECKIN_QUESTIONS[min(checkin_step, len(CHECKIN_QUESTIONS) - 1)]
+
+    return f"""You are doing a quick daily check-in with a small business owner. This is NOT the onboarding survey — they already did that. This is a 2-minute conversation to understand what's on their mind today.
+
+RULES:
+1. Be casual and warm. Like a friend checking in, not a survey.
+2. Keep your responses SHORT — one or two sentences max.
+3. React to what they say before moving on.
+4. If they mention something stressing them, acknowledge it.
+5. Reference previous check-ins if relevant (e.g., "How did that staffing thing work out?").
+6. Don't ask more than one question at a time.
+
+{profile_section}
+
+{onboarding_summary}
+
+{last_checkin_section}
+
+CURRENT CHECK-IN STEP {checkin_step}:
+{current_q}
+
+Respond naturally. One reaction + one question. Keep it real."""
 
 
 class ChatRequest(BaseModel):
@@ -595,6 +748,225 @@ async def chat(req: ChatRequest):
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+
+# ── Check-in analysis (extract stress points, wins, priorities) ──
+async def _run_checkin_analysis(session_id: str, conversation: list):
+    """Analyze check-in conversation for stress points, wins, and card priorities."""
+    try:
+        conv_text = "\n".join(f"{'AI' if m['role']=='assistant' else 'Owner'}: {m['content']}" for m in conversation)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{SPUR_API_BASE}/chat/completions",
+                json={
+                    "model": ANALYSIS_MODEL,
+                    "messages": [
+                        {"role": "system", "content": (
+                            "You analyze a daily check-in conversation with a small business owner. "
+                            "Extract: stress_points (things worrying them), wins (things going well), "
+                            "and priorities (card IDs to surface, in order of importance). "
+                            "Available card IDs: sales, reviews, social, catering, inventory, checklist, goals, stress. "
+                            "Respond as JSON: {\"stress_points\": [...], \"wins\": [...], \"priorities\": [...]} "
+                            "Only include priorities that are relevant to what they said. "
+                            "If nothing stressed them, stress_points is empty. If no wins, wins is empty."
+                        )},
+                        {"role": "user", "content": f"Check-in conversation:\n{conv_text}"},
+                    ],
+                    "stream": False,
+                    "temperature": 0.2,
+                    "max_tokens": 600,
+                },
+                headers={
+                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
+            if resp.status_code != 200:
+                return
+            data = resp.json()
+            msg = data["choices"][0]["message"]
+            content = msg.get("content") or ""
+            if not content and msg.get("reasoning"):
+                content = msg["reasoning"]
+
+            # Parse JSON from response
+            import re as _re
+            json_match = _re.search(r'\{[^}]+\}', content, _re.DOTALL)
+            if json_match:
+                try:
+                    result = json.loads(json_match.group())
+                    stress_points = result.get("stress_points", [])
+                    wins = result.get("wins", [])
+                    priorities = result.get("priorities", [])
+
+                    _save_checkin(session_id, conversation, stress_points, wins, priorities)
+                    if priorities:
+                        _save_card_priorities(session_id, priorities, "checkin")
+                except json.JSONDecodeError:
+                    pass
+    except Exception:
+        pass
+
+
+# ── Check-in chat endpoint ──────────────────────────────────────
+@app.post("/api/survey/checkin")
+async def checkin_chat(req: ChatRequest):
+    """Daily check-in mode for returning users who completed onboarding."""
+    if not _has_completed_onboarding(req.session_id):
+        return JSONResponse({"error": "Onboarding not complete", "mode": "onboarding"})
+
+    # Load existing check-in conversation from memory (stored in a separate dict)
+    # or start a new one
+    checkin_key = f"checkin_{req.session_id}"
+    if not hasattr(checkin_chat, '_conversations'):
+        checkin_chat._conversations = {}
+    if checkin_key not in checkin_chat._conversations:
+        checkin_chat._conversations[checkin_key] = {"messages": [], "step": 0}
+
+    conv = checkin_chat._conversations[checkin_key]
+    conv["messages"].append({"role": "user", "content": req.answer})
+    conv["step"] += 1
+
+    system_prompt = _build_checkin_prompt(req.session_id, conv["messages"], conv["step"])
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Send last 4 messages of the check-in conversation
+    recent = conv["messages"][-4:]
+    for msg in recent:
+        if msg["role"] == "user":
+            messages.append({"role": "user", "content": msg["content"]})
+        else:
+            messages.append({"role": "assistant", "content": msg["content"]})
+
+    # Tell the AI to react + ask the next check-in question
+    messages.append({"role": "user", "content": (
+        "React to what I said, then ask your next check-in question. Keep it short and natural."
+    )})
+
+    total_steps = 5
+
+    async def sse_stream():
+        full_response = ""
+
+        if not SPUR_DEMO_API_KEY:
+            yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
+                async with client.stream(
+                    "POST",
+                    f"{SPUR_API_BASE}/chat/completions",
+                    json={
+                        "model": SURVEY_MODEL,
+                        "messages": messages,
+                        "stream": True,
+                        "temperature": 0.6,
+                        "max_tokens": 800,
+                    },
+                    headers={
+                        "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                ) as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
+                        return
+
+                    got_content = False
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        if line.strip() == "data: [DONE]":
+                            break
+                        try:
+                            chunk = json.loads(line[6:])
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                got_content = True
+                                full_response += content
+                                yield f"data: {json.dumps({'content': content})}\n\n"
+                        except (json.JSONDecodeError, IndexError):
+                            continue
+
+                    # Fallback for reasoning models
+                    if not got_content:
+                        resp2 = await client.post(
+                            f"{SPUR_API_BASE}/chat/completions",
+                            json={
+                                "model": SURVEY_MODEL,
+                                "messages": messages,
+                                "stream": False,
+                                "temperature": 0.6,
+                                "max_tokens": 800,
+                            },
+                            headers={
+                                "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                                "Content-Type": "application/json",
+                            },
+                        )
+                        if resp2.status_code == 200:
+                            msg = resp2.json()["choices"][0]["message"]
+                            full_response = msg.get("content") or ""
+                            if not full_response and msg.get("reasoning"):
+                                full_response = msg["reasoning"]
+                            if full_response:
+                                for i in range(0, len(full_response), 3):
+                                    yield f"data: {json.dumps({'content': full_response[i:i+3]})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
+            return
+
+        # Add AI response to conversation
+        conv["messages"].append({"role": "assistant", "content": full_response})
+
+        # Check if check-in is complete
+        is_done = conv["step"] >= total_steps
+
+        # Run analysis and save when done
+        if is_done:
+            import asyncio
+            asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
+            # Clear the in-memory conversation
+            del checkin_chat._conversations[checkin_key]
+
+        yield f"data: {json.dumps({'done': is_done, 'mode': 'checkin', 'step': conv['step'], 'total_steps': total_steps})}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(sse_stream(), media_type="text/event-stream")
+
+
+@app.get("/api/survey/checkin/latest")
+async def get_latest_checkin(session_id: str):
+    """Get the latest daily check-in for a session."""
+    checkin = _get_latest_checkin(session_id)
+    if not checkin:
+        return JSONResponse({"checkin": None, "message": "No check-ins yet."})
+    return checkin
+
+
+@app.get("/api/survey/checkin/status")
+async def get_checkin_status(session_id: str):
+    """Check if the user should see onboarding or check-in mode."""
+    onboarded = _has_completed_onboarding(session_id)
+    latest = _get_latest_checkin(session_id) if onboarded else None
+    priorities = _get_card_priorities(session_id) if onboarded else []
+    return {
+        "mode": "checkin" if onboarded else "onboarding",
+        "onboarded": onboarded,
+        "has_checkin_today": latest is not None,
+        "latest_checkin": latest,
+        "card_priorities": priorities,
+    }
+
+
+@app.get("/api/survey/priorities/{session_id}")
+async def get_priorities(session_id: str):
+    """Get card priorities for a session."""
+    return {"priorities": _get_card_priorities(session_id)}
 
 
 @app.get("/api/survey/state")
