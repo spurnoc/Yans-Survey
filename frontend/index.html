@@ -316,7 +316,7 @@ textarea{resize:none}
       <div class="brand-mark">B</div>
       <div>
         <div class="header-title">Daily 15</div>
-        <div class="header-sub" id="header-sub">Question 1 of 13</div>
+        <div class="header-sub" id="header-sub">Loading…</div>
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px">
@@ -325,7 +325,7 @@ textarea{resize:none}
     </div>
   </div>
 
-  <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemax="13" aria-label="Survey progress"></div>
+  <div class="progress-bar" id="progress-bar" role="progressbar" aria-valuenow="0" aria-valuemax="0" aria-label="Survey progress"></div>
 
   <div class="chat-area" id="chat-area" role="log" aria-live="polite" aria-label="Survey conversation">
     <!-- Populated by init() — either opening message for new sessions or full conversation for returning ones -->
@@ -337,23 +337,36 @@ textarea{resize:none}
 <script>
 const API = '/api/survey';
 let qIndex = 0;
-let totalQuestions = 13;
+let totalQuestions = 0;
 let isStreaming = false;
 let currentChoices = null;
 let pendingChoices = null;
 let currentMode = 'onboarding'; // 'onboarding' or 'checkin'
 
+// Helper: fetch with AbortController-based timeout (default 30s)
+async function fetchWithTimeout(url, options = {}, timeout = 30000) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  try {
+    const resp = await fetch(url, { ...options, signal: controller.signal });
+    return resp;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 // Business type choices for Q1 — used for new onboarding sessions
+// Strings must match the backend exactly (no spaces around slashes)
 const BUSINESS_TYPES = [
-  'Restaurant / Cafe',
-  'Salon / Spa / Barber',
-  'Plumber / Electrician / HVAC',
-  'Retail / Boutique',
-  'Gym / Fitness Studio',
-  'Landscaping / Lawn Care',
-  'Auto Repair / Detailing',
+  'Restaurant/Cafe',
+  'Salon/Spa/Barber',
+  'Plumber/Electrician/HVAC',
+  'Retail/Boutique',
+  'Gym/Fitness Studio',
+  'Landscaping/Lawn Care',
+  'Auto Repair/Detailing',
   'Cleaning Service',
-  'Photography / Video',
+  'Photography/Video',
   'Real Estate',
   'Other (type your own)',
 ];
@@ -374,7 +387,7 @@ function autoScroll() {
 async function init() {
   try {
     // Check if user has completed onboarding
-    const status = await fetch(`${API}/checkin/status?session_id=${sessionId}`).then(r => r.json());
+    const status = await fetchWithTimeout(`${API}/checkin/status?session_id=${sessionId}`).then(r => r.json());
 
     if (status.mode === 'checkin') {
       // Returning user — check-in mode
@@ -404,21 +417,32 @@ async function init() {
     // Onboarding mode
     currentMode = 'onboarding';
     updateModePill('onboarding');
-    const state = await fetch(`${API}/state?session_id=${sessionId}`).then(r => r.json());
+    const state = await fetchWithTimeout(`${API}/state?session_id=${sessionId}`).then(r => r.json());
     qIndex = state.q_index || 0;
-    totalQuestions = state.total_questions || 13;
+    totalQuestions = state.total_questions || 0;
+
+    // Update the static HTML header and progress bar max from the API value
+    document.getElementById('header-sub').textContent = `Question ${qIndex + 1} of ${totalQuestions}`;
+    document.getElementById('progress-bar').setAttribute('aria-valuemax', String(totalQuestions));
 
     if (state.conversation && state.conversation.length > 0) {
       // Returning user — restore the full conversation
       renderExistingConversation(state);
       autoScroll();
     } else {
-      // New user — show the opening message
+      // New user — show the opening message (built with createElement for safety)
       const chat = document.getElementById('chat-area');
-      chat.innerHTML = `
-        <div class="msg-ai">
-          <div class="msg-ai-bubble">Hey — quick survey about how you run your business day to day. No wrong answers, just want to understand your world. First: <strong>what kind of business do you run?</strong></div>
-        </div>`;
+      chat.innerHTML = '';
+      const wrapper = document.createElement('div');
+      wrapper.className = 'msg-ai';
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-ai-bubble';
+      bubble.textContent = 'Hey — quick survey about how you run your business day to day. No wrong answers, just want to understand your world. First: ';
+      const strong = document.createElement('strong');
+      strong.textContent = 'what kind of business do you run?';
+      bubble.appendChild(strong);
+      wrapper.appendChild(bubble);
+      chat.appendChild(wrapper);
       autoScroll();
     }
 
@@ -578,14 +602,38 @@ function showComplete() {
   const chat = document.getElementById('chat-area');
   const div = document.createElement('div');
   div.className = 'complete-screen mode-transition';
-  div.innerHTML = `
-    <div class="complete-icon">✓</div>
-    <h2>That's everything</h2>
-    <p>Your dashboard has been updated with a real picture of where you're at. Here's what your Daily 15 could look like.</p>
-    <a href="/dashboard.html?session=${sessionId}" style="display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px">See your Daily 15 →</a>
-    <div class="transcript-toggle" onclick="toggleTranscript()" style="margin-top:16px">View full transcript</div>
-    <div class="transcript-panel" id="transcript-panel"></div>
-  `;
+
+  const icon = document.createElement('div');
+  icon.className = 'complete-icon';
+  icon.textContent = '✓';
+  div.appendChild(icon);
+
+  const h2 = document.createElement('h2');
+  h2.textContent = "That's everything";
+  div.appendChild(h2);
+
+  const p = document.createElement('p');
+  p.textContent = "Your dashboard has been updated with a real picture of where you're at. Here's what your Daily 15 could look like.";
+  div.appendChild(p);
+
+  const link = document.createElement('a');
+  link.href = `/dashboard.html?session=${sessionId}`;
+  link.textContent = 'See your Daily 15 →';
+  link.setAttribute('style', 'display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px');
+  div.appendChild(link);
+
+  const toggle = document.createElement('div');
+  toggle.className = 'transcript-toggle';
+  toggle.textContent = 'View full transcript';
+  toggle.setAttribute('style', 'margin-top:16px');
+  toggle.onclick = toggleTranscript;
+  div.appendChild(toggle);
+
+  const panel = document.createElement('div');
+  panel.className = 'transcript-panel';
+  panel.id = 'transcript-panel';
+  div.appendChild(panel);
+
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
   autoScroll();
@@ -598,12 +646,26 @@ function showCheckinComplete() {
   const chat = document.getElementById('chat-area');
   const div = document.createElement('div');
   div.className = 'complete-screen mode-transition';
-  div.innerHTML = `
-    <div class="complete-icon">✓</div>
-    <h2>Check-in done</h2>
-    <p>Your dashboard has been updated with today's priorities. See you tomorrow.</p>
-    <a href="/dashboard.html?session=${sessionId}" style="display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px">Go to dashboard →</a>
-  `;
+
+  const icon = document.createElement('div');
+  icon.className = 'complete-icon';
+  icon.textContent = '✓';
+  div.appendChild(icon);
+
+  const h2 = document.createElement('h2');
+  h2.textContent = 'Check-in done';
+  div.appendChild(h2);
+
+  const p = document.createElement('p');
+  p.textContent = 'Your dashboard has been updated with today\'s priorities. See you tomorrow.';
+  div.appendChild(p);
+
+  const link = document.createElement('a');
+  link.href = `/dashboard.html?session=${sessionId}`;
+  link.textContent = 'Go to dashboard →';
+  link.setAttribute('style', 'display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px');
+  div.appendChild(link);
+
   chat.appendChild(div);
   chat.scrollTop = chat.scrollHeight;
   autoScroll();
@@ -641,7 +703,7 @@ async function submitAnswer(answer) {
   autoScroll();
 
   try {
-    const resp = await fetch(endpoint, {
+    const resp = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ answer, session_id: sessionId }),
@@ -693,7 +755,7 @@ async function submitAnswer(answer) {
               setTimeout(() => showComplete(), 1500);
             }
           }
-        } catch {}
+        } catch(e) { console.error('SSE parse error:', e, dataStr); }
       }
     }
 
@@ -771,13 +833,13 @@ function autoGrow(el) {
 
 async function resetSurvey() {
   if (!confirm('Start over? This clears the conversation.')) return;
-  await fetch(`${API}/reset?session_id=${sessionId}`, { method: 'POST' });
+  await fetchWithTimeout(`${API}/reset?session_id=${sessionId}`, { method: 'POST' });
   location.reload();
 }
 
 async function loadTranscript() {
   try {
-    const data = await fetch(`${API}/transcript?session_id=${sessionId}`).then(r => r.json());
+    const data = await fetchWithTimeout(`${API}/transcript?session_id=${sessionId}`).then(r => r.json());
     const panel = document.getElementById('transcript-panel');
     if (!panel) return;
 
