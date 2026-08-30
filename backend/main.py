@@ -1274,6 +1274,7 @@ async def _run_checkin_analysis(session_id: str, conversation: list):
 # ── Check-in chat endpoint ──────────────────────────────────────
 _CHECKIN_TTL_SECONDS = 30 * 60  # 30 minutes
 _CHECKIN_MAX_CONVERSATIONS = 100
+_checkin_lock = asyncio.Lock()
 
 @app.post("/api/survey/checkin")
 async def checkin_chat(req: ChatRequest):
@@ -1291,36 +1292,44 @@ async def checkin_chat(req: ChatRequest):
     if not hasattr(checkin_chat, '_conversations'):
         checkin_chat._conversations = {}
 
-    # TTL cleanup: delete conversations older than 30 minutes
-    now = time.time()
-    expired_keys = [
-        k for k, v in checkin_chat._conversations.items()
-        if now - v.get("_created_at", now) > _CHECKIN_TTL_SECONDS
-    ]
-    for k in expired_keys:
-        del checkin_chat._conversations[k]
-
-    # Max size limit: if exceeded, delete the oldest conversations
-    if len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS:
-        # Sort by creation time and remove oldest
-        sorted_keys = sorted(
-            checkin_chat._conversations.keys(),
-            key=lambda k: checkin_chat._conversations[k].get("_created_at", 0)
-        )
-        # Remove enough to get back under the limit
-        while len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS and sorted_keys:
-            oldest_key = sorted_keys.pop(0)
-            del checkin_chat._conversations[oldest_key]
-
-    # Load existing check-in conversation from memory or start a new one
     checkin_key = f"checkin_{req.session_id}"
-    if checkin_key not in checkin_chat._conversations:
-        checkin_chat._conversations[checkin_key] = {"messages": [], "step": 0, "_created_at": now}
+    now = time.time()
 
-    conv = checkin_chat._conversations[checkin_key]
-    conv["messages"].append({"role": "user", "content": req.answer})
-    conv["step"] += 1
+    # Acquire the lock for all dict read/write operations (quick, no awaits inside)
+    async with _checkin_lock:
+        # Initialize the in-memory conversations dict if needed (race-safe)
+        if not hasattr(checkin_chat, '_conversations'):
+            checkin_chat._conversations = {}
 
+        # TTL cleanup: delete conversations older than 30 minutes
+        expired_keys = [
+            k for k, v in checkin_chat._conversations.items()
+            if now - v.get("_created_at", now) > _CHECKIN_TTL_SECONDS
+        ]
+        for k in expired_keys:
+            del checkin_chat._conversations[k]
+
+        # Max size limit: if exceeded, delete the oldest conversations
+        if len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS:
+            # Sort by creation time and remove oldest
+            sorted_keys = sorted(
+                checkin_chat._conversations.keys(),
+                key=lambda k: checkin_chat._conversations[k].get("_created_at", 0)
+            )
+            # Remove enough to get back under the limit
+            while len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS and sorted_keys:
+                oldest_key = sorted_keys.pop(0)
+                del checkin_chat._conversations[oldest_key]
+
+        # Load existing check-in conversation from memory or start a new one
+        if checkin_key not in checkin_chat._conversations:
+            checkin_chat._conversations[checkin_key] = {"messages": [], "step": 0, "_created_at": now}
+
+        conv = checkin_chat._conversations[checkin_key]
+        conv["messages"].append({"role": "user", "content": req.answer})
+        conv["step"] += 1
+
+    # ── Lock released: build prompt + stream LLM without holding it ──
     system_prompt = await _build_checkin_prompt(req.session_id, conv["messages"], conv["step"])
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -1352,16 +1361,16 @@ async def checkin_chat(req: ChatRequest):
             full_response = stop.value or ""
 
         # Add AI response to conversation
-        conv["messages"].append({"role": "assistant", "content": full_response})
+        async with _checkin_lock:
+            conv["messages"].append({"role": "assistant", "content": full_response})
+            # Check if check-in is complete
+            is_done = conv["step"] >= total_steps
 
-        # Check if check-in is complete
-        is_done = conv["step"] >= total_steps
-
-        # Run analysis and save when done
-        if is_done:
-            asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
-            # Clear the in-memory conversation
-            del checkin_chat._conversations[checkin_key]
+            # Run analysis and save when done
+            if is_done:
+                asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
+                # Clear the in-memory conversation
+                del checkin_chat._conversations[checkin_key]
 
         yield f"data: {json.dumps({'done': is_done, 'mode': 'checkin', 'step': conv['step'], 'total_steps': total_steps})}\n\n"
         yield "data: [DONE]\n\n"
