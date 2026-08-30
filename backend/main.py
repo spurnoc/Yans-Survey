@@ -874,7 +874,7 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
 
     if not SPUR_DEMO_API_KEY:
         yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
-        return full_response
+        return
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
@@ -896,7 +896,7 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
                 if resp.status_code != 200:
                     body = await resp.aread()
                     yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
-                    return full_response
+                    return  # can't return value from async generator
 
                 got_content = False
                 async for line in resp.aiter_lines():
@@ -943,7 +943,8 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
 
-    return full_response
+    # Can't return value from async generator — caller reads full_response
+    # via the _full_response sentinel yielded at the end
 
 
 @app.post("/api/survey/chat")
