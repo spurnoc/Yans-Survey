@@ -371,6 +371,14 @@ async def init_db():
         updated_at TEXT DEFAULT (datetime('now'))
     )
     """)
+    await _turso_execute("""
+    CREATE TABLE IF NOT EXISTS checkin_sessions (
+        session_id TEXT PRIMARY KEY,
+        messages TEXT DEFAULT '[]',
+        step INTEGER DEFAULT 0,
+        updated_at TEXT DEFAULT (datetime('now'))
+    )
+    """)
 
 
 async def _load_session(session_id: str) -> dict | None:
@@ -1402,10 +1410,54 @@ async def _run_checkin_analysis(session_id: str, conversation: list):
         logger.debug("_run_checkin_analysis failed: %s", e)
 
 
+# ── Check-in session persistence (Turso-backed) ──────────────────
+async def _load_checkin_session(session_id: str) -> dict:
+    """Load check-in conversation from Turso. Returns {messages, step}."""
+    try:
+        rows = await _turso_query(
+            "SELECT messages, step FROM checkin_sessions WHERE session_id=?",
+            [{"type": "text", "value": session_id}]
+        )
+        if rows:
+            return {
+                "messages": json.loads(rows[0].get("messages", "[]")),
+                "step": int(rows[0].get("step", 0)),
+            }
+    except Exception as e:
+        logger.debug("_load_checkin_session failed: %s", e)
+    return {"messages": [], "step": 0}
+
+
+async def _save_checkin_session(session_id: str, messages: list, step: int):
+    """Save check-in conversation to Turso (survives server restart)."""
+    try:
+        await _turso_execute(
+            """INSERT OR REPLACE INTO checkin_sessions (session_id, messages, step, updated_at)
+               VALUES (?, ?, ?, datetime('now'))""",
+            [
+                {"type": "text", "value": session_id},
+                {"type": "text", "value": json.dumps(messages)},
+                {"type": "text", "value": str(step)},
+            ]
+        )
+    except Exception as e:
+        logger.debug("_save_checkin_session failed: %s", e)
+
+
+async def _clear_checkin_session(session_id: str):
+    """Delete check-in conversation from Turso (after completion)."""
+    try:
+        await _turso_execute(
+            "DELETE FROM checkin_sessions WHERE session_id=?",
+            [{"type": "text", "value": session_id}]
+        )
+    except Exception as e:
+        logger.debug("_clear_checkin_session failed: %s", e)
+
+
 # ── Check-in chat endpoint ──────────────────────────────────────
-_CHECKIN_TTL_SECONDS = 30 * 60  # 30 minutes
-_CHECKIN_MAX_CONVERSATIONS = 100
-_checkin_lock = asyncio.Lock()
+# Check-in conversations are now persisted in Turso (checkin_sessions table).
+# No in-memory dict, no TTL, no lock needed — the database handles it all.
 
 @app.post("/api/survey/checkin")
 async def checkin_chat(req: ChatRequest):
@@ -1419,51 +1471,19 @@ async def checkin_chat(req: ChatRequest):
     if not await _has_completed_onboarding(req.session_id):
         return JSONResponse({"error": "Onboarding not complete", "mode": "onboarding"})
 
-    # Initialize the in-memory conversations dict if needed
-    if not hasattr(checkin_chat, '_conversations'):
-        checkin_chat._conversations = {}
+    # Load check-in conversation from Turso (survives server restart)
+    checkin = await _load_checkin_session(req.session_id)
+    conv_messages = checkin["messages"]
+    conv_step = checkin["step"]
 
-    checkin_key = f"checkin_{req.session_id}"
-    now = time.time()
+    # Append the user's new answer
+    conv_messages.append({"role": "user", "content": req.answer})
+    conv_step += 1
 
-    # Acquire the lock for all dict read/write operations (quick, no awaits inside)
-    async with _checkin_lock:
-        # Initialize the in-memory conversations dict if needed (race-safe)
-        if not hasattr(checkin_chat, '_conversations'):
-            checkin_chat._conversations = {}
+    # Save updated state to Turso immediately
+    await _save_checkin_session(req.session_id, conv_messages, conv_step)
 
-        # TTL cleanup: delete conversations older than 30 minutes
-        expired_keys = [
-            k for k, v in checkin_chat._conversations.items()
-            if now - v.get("_created_at", now) > _CHECKIN_TTL_SECONDS
-        ]
-        for k in expired_keys:
-            del checkin_chat._conversations[k]
-
-        # Max size limit: if exceeded, delete the oldest conversations
-        if len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS:
-            # Sort by creation time and remove oldest
-            sorted_keys = sorted(
-                checkin_chat._conversations.keys(),
-                key=lambda k: checkin_chat._conversations[k].get("_created_at", 0)
-            )
-            # Remove enough to get back under the limit
-            while len(checkin_chat._conversations) >= _CHECKIN_MAX_CONVERSATIONS and sorted_keys:
-                oldest_key = sorted_keys.pop(0)
-                del checkin_chat._conversations[oldest_key]
-
-        # Load existing check-in conversation from memory or start a new one
-        if checkin_key not in checkin_chat._conversations:
-            checkin_chat._conversations[checkin_key] = {"messages": [], "step": 0, "_created_at": now}
-
-        conv = checkin_chat._conversations[checkin_key]
-        conv["messages"].append({"role": "user", "content": req.answer})
-        conv["step"] += 1
-        # Copy to locals so we don't read conv fields after releasing the lock
-        conv_messages = list(conv["messages"])  # shallow copy
-        conv_step = conv["step"]
-
-    # ── Lock released: build prompt + stream LLM without holding it ──
+    # Build prompt + stream LLM response
     system_prompt = await _build_checkin_prompt(req.session_id, conv_messages, conv_step)
     messages = [{"role": "system", "content": system_prompt}]
 
@@ -1476,6 +1496,7 @@ async def checkin_chat(req: ChatRequest):
     )})
 
     total_steps = 5
+    session_id_ref = req.session_id  # capture for closure
 
     async def sse_stream():
         # Stream the LLM response via the shared helper
@@ -1486,26 +1507,24 @@ async def checkin_chat(req: ChatRequest):
                 try:
                     full_response += json.loads(chunk[6:])["content"]
                 except (json.JSONDecodeError, KeyError):
-                    pass  # V3-5: malformed JSON that passes startswith check
+                    pass
             yield chunk
 
-        # Add AI response to conversation
-        async with _checkin_lock:
-            conv["messages"].append({"role": "assistant", "content": full_response})
-            # Check if check-in is complete
-            is_done = conv["step"] >= total_steps
+        # Add AI response to conversation and save to Turso
+        conv_messages.append({"role": "assistant", "content": full_response})
+        is_done = conv_step >= total_steps
 
-            # Run analysis and save when done (V3-7: retain task reference)
-            if is_done:
-                task = asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
-                _background_tasks.add(task)
-                task.add_done_callback(_background_tasks.discard)
-                # Clear the in-memory conversation (pop avoids KeyError on concurrent requests)
-                checkin_chat._conversations.pop(checkin_key, None)
-            # Read step inside the lock to avoid reading conv after release
-            conv_step_out = conv["step"]
+        if is_done:
+            # Run analysis and clear check-in session
+            await _save_checkin_session(session_id_ref, conv_messages, conv_step)
+            task = asyncio.create_task(_run_checkin_analysis(session_id_ref, list(conv_messages)))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+            await _clear_checkin_session(session_id_ref)
+        else:
+            await _save_checkin_session(session_id_ref, conv_messages, conv_step)
 
-        yield f"data: {json.dumps({'done': is_done, 'mode': 'checkin', 'step': conv_step_out, 'total_steps': total_steps})}\n\n"
+        yield f"data: {json.dumps({'done': is_done, 'mode': 'checkin', 'step': conv_step, 'total_steps': total_steps})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
