@@ -1087,7 +1087,7 @@ async function handleAuth() {
       body: JSON.stringify({ email, password }),
     });
 
-    const data = await resp.json();
+    const data = await resp.json().catch(() => ({}));
 
     if (!resp.ok) {
       showAuthError(data.detail || t('something_wrong_generic'));
