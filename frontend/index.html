@@ -306,9 +306,111 @@ textarea{resize:none}
   .text-input{font-size:13.5px;padding:11px 14px}
   .send-btn{width:42px;height:42px;font-size:16px}
 }
+
+/* ── Auth screen ─────────────────────────────────────────── */
+.auth-overlay{
+  position:fixed;inset:0;z-index:1000;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--cream-bg);
+  animation:fadeIn .3s;
+}
+.auth-card{
+  width:100%;max-width:380px;
+  padding:40px 32px;
+  background:var(--cream-light);
+  border:1px solid var(--warm-border);
+  border-radius:var(--radius-lg);
+  box-shadow:0 2px 20px rgba(0,0,0,0.04);
+}
+.auth-brand{
+  display:flex;align-items:center;gap:10px;
+  margin-bottom:28px;justify-content:center;
+}
+.auth-brand .brand-mark{width:36px;height:36px;font-size:18px}
+.auth-title{
+  font-family:'Instrument Serif',serif;font-size:22px;
+  text-align:center;margin-bottom:6px;letter-spacing:-0.3px;
+}
+.auth-sub{
+  font-size:13px;color:var(--warm-muted);
+  text-align:center;margin-bottom:24px;
+}
+.auth-tabs{
+  display:flex;gap:0;margin-bottom:20px;
+  border:1px solid var(--warm-border);border-radius:var(--radius);
+  overflow:hidden;
+}
+.auth-tab{
+  flex:1;padding:10px;text-align:center;
+  font-size:13px;font-weight:500;color:var(--warm-muted);
+  transition:all .2s;
+}
+.auth-tab.active{
+  background:var(--warm-dark);color:var(--cream-bg);
+}
+.auth-field{margin-bottom:14px}
+.auth-field label{
+  display:block;font-size:12px;font-weight:500;
+  color:var(--warm-muted);margin-bottom:5px;
+  text-transform:uppercase;letter-spacing:0.05em;
+}
+.auth-field input{
+  width:100%;padding:12px 14px;
+  background:var(--cream-bg);
+  border:1px solid var(--warm-border);
+  border-radius:var(--radius);
+  font-size:14px;color:var(--warm-dark);
+  transition:border-color .2s;
+}
+.auth-field input:focus{border-color:var(--accent)}
+.auth-field input::placeholder{color:rgba(26,26,26,0.3)}
+.auth-error{
+  font-size:13px;color:var(--accent);
+  margin-bottom:12px;display:none;
+}
+.auth-error.show{display:block;animation:shake .4s}
+.auth-submit{
+  width:100%;padding:13px;
+  background:var(--warm-dark);color:var(--cream-bg);
+  border-radius:var(--radius);font-size:14px;font-weight:600;
+  transition:all .2s;margin-top:6px;
+}
+.auth-submit:hover{background:var(--accent)}
+.auth-submit:disabled{opacity:0.5;cursor:not-allowed}
+.auth-logout{
+  font-size:11px;color:var(--warm-muted);cursor:pointer;
+  padding:4px 10px;border-radius:var(--radius-pill);
+  transition:all .2s;font-weight:500;
+}
+.auth-logout:hover{background:var(--warm-faint);color:var(--warm-dark)}
 </style>
 </head>
 <body>
+
+<!-- Auth overlay — shown if no valid token -->
+<div class="auth-overlay" id="auth-overlay" style="display:none">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="brand-mark">B</div>
+    </div>
+    <div class="auth-title" id="auth-title">Welcome back</div>
+    <div class="auth-sub" id="auth-sub">Log in to continue your survey</div>
+    <div class="auth-tabs">
+      <div class="auth-tab active" id="tab-login" onclick="switchAuthMode('login')">Log In</div>
+      <div class="auth-tab" id="tab-register" onclick="switchAuthMode('register')">Register</div>
+    </div>
+    <div class="auth-error" id="auth-error"></div>
+    <div class="auth-field">
+      <label for="auth-email">Email</label>
+      <input type="email" id="auth-email" placeholder="you@example.com" autocomplete="email">
+    </div>
+    <div class="auth-field">
+      <label for="auth-password">Password</label>
+      <input type="password" id="auth-password" placeholder="At least 8 characters" autocomplete="current-password">
+    </div>
+    <button class="auth-submit" id="auth-submit" onclick="handleAuth()">Log In</button>
+  </div>
+</div>
 
 <div id="app">
   <div class="header">
@@ -322,6 +424,7 @@ textarea{resize:none}
     <div style="display:flex;align-items:center;gap:8px">
       <span class="mode-pill onboarding" id="mode-pill">Onboarding</span>
       <div class="reset-btn" onclick="resetSurvey()" role="button" aria-label="Reset survey" tabindex="0">Reset</div>
+      <div class="auth-logout" onclick="logout()" role="button" aria-label="Log out" tabindex="0">Logout</div>
     </div>
   </div>
 
@@ -336,22 +439,196 @@ textarea{resize:none}
 
 <script>
 const API = '/api/survey';
+const AUTH_API = '/api/auth';
 let qIndex = 0;
 let totalQuestions = 0;
 let isStreaming = false;
 let currentChoices = null;
 let pendingChoices = null;
 let currentMode = 'onboarding'; // 'onboarding' or 'checkin'
+let authMode = 'login'; // 'login' or 'register'
+
+// ── Auth token management ──────────────────────────────────────
+function getAuthToken() {
+  return localStorage.getItem('auth_token');
+}
+
+function setAuthToken(token) {
+  localStorage.setItem('auth_token', token);
+}
+
+function clearAuthToken() {
+  localStorage.removeItem('auth_token');
+}
+
+function authHeaders(extra = {}) {
+  const token = getAuthToken();
+  const headers = { ...extra };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 // Helper: fetch with AbortController-based timeout (default 30s)
+// Automatically adds Authorization header for authenticated requests.
 async function fetchWithTimeout(url, options = {}, timeout = 30000) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
   try {
-    const resp = await fetch(url, { ...options, signal: controller.signal });
+    // Merge auth header into request headers
+    const mergedOptions = {
+      ...options,
+      headers: authHeaders(options.headers || {}),
+      signal: controller.signal,
+    };
+    const resp = await fetch(url, mergedOptions);
+    // If we get a 401, the token is invalid — show auth screen
+    if (resp.status === 401) {
+      clearAuthToken();
+      showAuthOverlay();
+    }
     return resp;
   } finally {
     clearTimeout(timeoutId);
+  }
+}
+
+// ── Auth UI ────────────────────────────────────────────────────
+function showAuthOverlay() {
+  document.getElementById('auth-overlay').style.display = 'flex';
+  document.getElementById('auth-email').focus();
+}
+
+function hideAuthOverlay() {
+  document.getElementById('auth-overlay').style.display = 'none';
+}
+
+function showAuthError(msg) {
+  const el = document.getElementById('auth-error');
+  el.textContent = msg;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+function switchAuthMode(mode) {
+  authMode = mode;
+  const loginTab = document.getElementById('tab-login');
+  const registerTab = document.getElementById('tab-register');
+  const title = document.getElementById('auth-title');
+  const sub = document.getElementById('auth-sub');
+  const submitBtn = document.getElementById('auth-submit');
+  const pwInput = document.getElementById('auth-password');
+
+  if (mode === 'login') {
+    loginTab.classList.add('active');
+    registerTab.classList.remove('active');
+    title.textContent = 'Welcome back';
+    sub.textContent = 'Log in to continue your survey';
+    submitBtn.textContent = 'Log In';
+    pwInput.setAttribute('autocomplete', 'current-password');
+  } else {
+    loginTab.classList.remove('active');
+    registerTab.classList.add('active');
+    title.textContent = 'Create account';
+    sub.textContent = 'Register to start your survey';
+    submitBtn.textContent = 'Register';
+    pwInput.setAttribute('autocomplete', 'new-password');
+  }
+  document.getElementById('auth-error').classList.remove('show');
+}
+
+async function handleAuth() {
+  const email = document.getElementById('auth-email').value.trim();
+  const password = document.getElementById('auth-password').value;
+  const submitBtn = document.getElementById('auth-submit');
+
+  if (!email || !password) {
+    showAuthError('Please enter your email and password.');
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = authMode === 'login' ? 'Logging in…' : 'Registering…';
+
+  try {
+    const endpoint = authMode === 'login' ? `${AUTH_API}/login` : `${AUTH_API}/register`;
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      showAuthError(data.detail || 'Something went wrong. Try again.');
+      return;
+    }
+
+    // Store token and proceed to survey
+    setAuthToken(data.token);
+    hideAuthOverlay();
+    document.getElementById('auth-password').value = '';
+    // Initialize the survey
+    init();
+  } catch (e) {
+    showAuthError('Connection error. Try again.');
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = authMode === 'login' ? 'Log In' : 'Register';
+  }
+}
+
+function logout() {
+  clearAuthToken();
+  showAuthOverlay();
+  document.getElementById('auth-email').value = '';
+  document.getElementById('auth-password').value = '';
+}
+
+// Enter key on password field submits
+document.addEventListener('DOMContentLoaded', () => {
+  const pwInput = document.getElementById('auth-password');
+  if (pwInput) {
+    pwInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleAuth();
+    });
+  }
+  const emailInput = document.getElementById('auth-email');
+  if (emailInput) {
+    emailInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('auth-password').focus();
+    });
+  }
+
+  // Check if user is authenticated before loading survey
+  checkAuthAndInit();
+});
+
+async function checkAuthAndInit() {
+  const token = getAuthToken();
+  if (!token) {
+    showAuthOverlay();
+    return;
+  }
+
+  // Verify token is still valid by calling /api/auth/me
+  try {
+    const resp = await fetch(`${AUTH_API}/me`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    if (resp.ok) {
+      hideAuthOverlay();
+      init();
+    } else {
+      clearAuthToken();
+      showAuthOverlay();
+    }
+  } catch (e) {
+    // Network error — try to load the survey anyway; endpoints will 401 if needed
+    hideAuthOverlay();
+    init();
   }
 }
 
@@ -872,8 +1149,6 @@ function escapeHtml(str) {
   if (!str) return '';
   return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[ch]));
 }
-
-init();
 </script>
 </body>
 </html>

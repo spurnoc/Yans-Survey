@@ -280,6 +280,24 @@ body{
 }
 .card-empty-inner-icon{font-size:20px;opacity:0.6}
 
+/* Connect-state CTA inside cards */
+.card-empty-cta{
+  text-align:center;padding:28px 16px;
+  display:flex;flex-direction:column;align-items:center;gap:14px;
+}
+.card-empty-cta-text{
+  font-size:14px;color:var(--text-secondary);
+  max-width:260px;line-height:1.5;
+}
+.card-empty-cta-btn{
+  display:inline-flex;align-items:center;gap:6px;
+  padding:10px 20px;background:var(--text);color:var(--bg);
+  border:none;border-radius:var(--radius-sm);
+  font-size:13px;font-weight:600;cursor:pointer;
+  transition:all .18s;font-family:var(--font-sans);
+}
+.card-empty-cta-btn:hover{background:var(--accent)}
+
 /* Card header */
 .card-header{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .card-kicker{
@@ -707,217 +725,114 @@ function Card({ kicker, title, priority, children, footer }) {
 
 // ── Individual Card Types ───────────────────────────────────────
 
+// Helper: render a connect/empty-state CTA inside a card body
+function EmptyCardState({ message, buttonLabel, onClick }) {
+  return React.createElement('div', { className: 'card-empty-cta' },
+    React.createElement('div', { className: 'card-empty-cta-text' }, message),
+    React.createElement('button', {
+      className: 'card-empty-cta-btn',
+      onClick: onClick || (() => {}),
+      'aria-label': buttonLabel,
+    }, buttonLabel),
+  );
+}
+
 const CARDS = {
   sales: (config, priority) => {
-    const days = [42, 38, 55, 47, 62, 71, 58];
-    const today = 71;
-    const yesterday = 62;
-    const trend = today > yesterday ? '+' + (today - yesterday) : '' + (today - yesterday);
     return Card({
-      kicker: 'Sales · ' + (config.pos || 'POS'),
+      kicker: 'Sales',
       title: 'Today at a glance',
       priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: '$' + today + '0', label: 'Today' }),
-          React.createElement(Metric, { value: trend, label: 'vs yesterday', tone: trend.startsWith('+') ? 'ok' : 'critical' }),
-        ),
-        Sparkline({ data: days, label: 'Last 7 days' }),
+        EmptyCardState({
+          message: 'Connect your POS system',
+          buttonLabel: 'Connect POS',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View sales breakdown' }, 'View breakdown'),
-        Pill({ tone: 'ok' }, 'Live'),
-      ]
     });
   },
 
   reviews: (config, priority) => {
-    const reviews = [
-      { text: 'Best sandwich in town!', sentiment: 'positive', time: '2h ago' },
-      { text: 'Service was slow today', sentiment: 'negative', time: '5h ago', pending: true },
-      { text: 'Love the new special', sentiment: 'positive', time: '1d ago' },
-    ];
-    const pending = reviews.filter(r => r.pending).length;
     return Card({
-      kicker: 'Reviews · ' + (config.platform || 'Google'),
-      title: pending > 0 ? pending + ' review' + (pending > 1 ? 's' : '') + ' need attention' : 'All caught up',
-      priority: priority || pending > 0,
+      kicker: 'Reviews',
+      title: 'Customer feedback',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: '4.6', label: 'Avg rating' }),
-          React.createElement(Metric, { value: pending, label: 'Pending reply', tone: pending > 0 ? 'warn' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          reviews.slice(0, 3).map((r, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, r.text.slice(0, 40) + (r.text.length > 40 ? '...' : '')),
-              React.createElement('span', { className: 'list-item-value' }, r.time)
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect Google Reviews',
+          buttonLabel: 'Connect Google',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Reply to reviews' }, 'Reply to reviews'),
-        Pill({ tone: pending > 0 ? 'warn' : 'ok' }, pending > 0 ? pending + ' pending' : 'All done'),
-      ]
     });
   },
 
   social: (config, priority) => {
-    const posts = [
-      { caption: 'Today\'s special: Reuben', engagement: 142, posted: true },
-      { caption: 'Behind the scenes prep', engagement: 89, posted: true },
-      { caption: 'Catering spread', engagement: 203, posted: false },
-    ];
-    const totalEng = posts.reduce((s, p) => s + p.engagement, 0);
     return Card({
-      kicker: 'Social · ' + (config.platform || 'Instagram'),
+      kicker: 'Social',
       title: 'Content queue',
       priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: totalEng, label: 'Engagement this week' }),
-          React.createElement(Metric, { value: posts.filter(p => !p.posted).length, label: 'Queued', tone: 'warn' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          posts.map((p, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, p.caption),
-              React.createElement('span', null,
-                Pill({ tone: p.posted ? 'ok' : 'muted' }, p.posted ? 'Posted' : 'Queued'),
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect Instagram',
+          buttonLabel: 'Connect Instagram',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Schedule a social media post' }, 'Schedule post'),
-      ]
     });
   },
 
   catering: (config, priority) => {
-    const pipeline = [
-      { name: 'Office lunch — 15 ppl', status: 'Quote sent', value: '$450', time: '2d ago' },
-      { name: 'Birthday party — 30 ppl', status: 'Awaiting reply', value: '$890', time: '5d ago', pending: true },
-      { name: 'Corporate event — 50 ppl', status: 'Confirmed', value: '$1,500', time: '1w ago' },
-    ];
-    const pending = pipeline.filter(p => p.pending).length;
-    const totalValue = pipeline.reduce((s, p) => s + parseInt(p.value.replace(/[^0-9]/g, '')), 0);
     return Card({
-      kicker: 'Catering · ' + (config.method || 'Email'),
-      title: pending > 0 ? pending + ' follow-up' + (pending > 1 ? 's' : '') + ' needed' : 'Pipeline looks good',
-      priority: priority || pending > 0,
+      kicker: 'Catering',
+      title: 'Pipeline',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: '$' + totalValue.toLocaleString(), label: 'Open pipeline' }),
-          React.createElement(Metric, { value: pipeline.length, label: 'Active quotes' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          pipeline.map((p, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, p.name),
-              React.createElement('span', null,
-                Pill({ tone: p.pending ? 'warn' : p.status === 'Confirmed' ? 'ok' : 'muted' }, p.status),
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect your email',
+          buttonLabel: 'Connect Email',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Follow up on catering pipeline' }, 'Follow up'),
-      ]
     });
   },
 
   inventory: (config, priority) => {
-    const items = [
-      { name: 'Produce', day: config.days?.find(d => d.includes('Tuesday')) || 'Tuesday', status: 'ok' },
-      { name: 'Supplies', day: config.days?.find(d => d.includes('Thursday')) || 'Thursday', status: 'ok' },
-      { name: 'Proteins', day: 'As needed', status: 'low' },
-    ];
     return Card({
       kicker: 'Inventory',
       title: 'Supply schedule',
       priority,
       children: [
-        React.createElement('div', { className: 'list' },
-          items.map((item, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, item.name),
-              React.createElement('span', null,
-                Pill({ tone: item.status === 'low' ? 'critical' : 'ok' }, item.day),
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Set up delivery schedule',
+          buttonLabel: 'Set Up',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Update inventory schedule' }, 'Update inventory'),
-      ]
     });
   },
 
   checklist: (config, priority) => {
-    const tasks = [
-      { label: 'Check POS from yesterday', done: true },
-      { label: 'Reply to new reviews', done: false },
-      { label: 'Review social queue', done: true },
-      { label: 'Confirm catering orders', done: false },
-      { label: 'Check inventory for tomorrow', done: false },
-    ];
-    const done = tasks.filter(t => t.done).length;
     return Card({
       kicker: 'Daily Checklist',
-      title: done + ' of ' + tasks.length + ' done',
+      title: 'Your daily tasks',
       priority,
       children: [
-        React.createElement('div', { className: 'list' },
-          tasks.map((t, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label', style: t.done ? { textDecoration: 'line-through', color: 'var(--text-muted)' } : {} }, t.label),
-              React.createElement('span', null,
-                Pill({ tone: t.done ? 'ok' : 'muted' }, t.done ? 'Done' : 'Pending'),
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Create your checklist',
+          buttonLabel: 'Create',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Start the daily checklist' }, 'Start checklist'),
-      ]
     });
   },
 
   goals: (config, priority) => {
-    const goals = [
-      { label: 'Monthly catering revenue', current: 3200, target: 5000, unit: '$' },
-      { label: 'Review responses', current: 18, target: 25, unit: '' },
-      { label: 'Social posts', current: 12, target: 15, unit: '' },
-    ];
     return Card({
       kicker: 'Goals',
       title: 'This month',
       priority,
       children: [
-        React.createElement('div', { className: 'list' },
-          goals.map((g, i) => {
-            const pct = Math.min(100, Math.round((g.current / g.target) * 100));
-            return React.createElement('div', { key: i, className: 'list-item', style: { flexDirection: 'column', alignItems: 'stretch', gap: '4px' } },
-              React.createElement('div', { style: { display: 'flex', justifyContent: 'space-between' } },
-                React.createElement('span', { className: 'list-item-label' }, g.label),
-                React.createElement('span', { className: 'list-item-value' }, g.unit + g.current + ' / ' + g.unit + g.target),
-              ),
-              React.createElement('div', { style: { height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' } },
-                React.createElement('div', { style: { height: '100%', width: pct + '%', background: pct >= 100 ? 'var(--ok)' : 'var(--accent)', borderRadius: '3px', transition: 'width .3s' } })
-              )
-            );
-          })
-        ),
+        EmptyCardState({
+          message: 'Set your goals',
+          buttonLabel: 'Set Goals',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Set a new goal' }, 'Set new goal'),
-      ]
     });
   },
 
@@ -927,495 +842,180 @@ const CARDS = {
       title: 'How are things today?',
       priority,
       children: [
-        React.createElement('p', { style: { color: 'var(--text-muted)', fontSize: '14px' } }, 'Take a moment to check in. What\'s on your mind?'),
+        EmptyCardState({
+          message: 'How are you feeling?',
+          buttonLabel: 'Check In',
+          onClick: () => { window.location.href = '/?session=' + getSessionId(); },
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => { window.location.href = '/?session=' + getSessionId(); }, 'aria-label': 'Start your daily wellbeing check-in' }, 'Daily check-in'),
-      ]
     });
   },
 
   appointments: (config, priority) => {
-    const today = [
-      { time: '9:00 AM', name: 'Kitchen walkthrough — prep review', status: 'done' },
-      { time: '11:30 AM', name: 'Client tasting — wedding quote', status: 'done' },
-      { time: '1:00 PM', name: 'Vendor meeting — produce supplier', status: 'upcoming' },
-      { time: '3:00 PM', name: 'Staff check-in — line cooks', status: 'upcoming' },
-      { time: '4:30 PM', name: 'Phone consult — corporate catering', status: 'gap' },
-    ];
-    const noShows = 1;
-    const gaps = today.filter(a => a.status === 'gap').length;
-    const nextAppt = today.find(a => a.status === 'upcoming');
     return Card({
       kicker: 'Appointments',
-      title: nextAppt ? 'Next: ' + nextAppt.time + ' — ' + nextAppt.name : 'No more today',
+      title: 'Today\'s schedule',
       priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: today.length, label: 'Today' }),
-          React.createElement(Metric, { value: noShows, label: 'No-shows', tone: noShows > 0 ? 'critical' : 'ok' }),
-          React.createElement(Metric, { value: gaps, label: 'Gaps', tone: gaps > 0 ? 'warn' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          today.slice(0, 4).map((a, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' },
-                React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-muted)', marginRight: '8px' } }, a.time),
-                a.name.slice(0, 35) + (a.name.length > 35 ? '...' : '')
-              ),
-              React.createElement('span', null,
-                Pill({ tone: a.status === 'done' ? 'ok' : a.status === 'gap' ? 'warn' : 'muted' }, a.status === 'done' ? 'Done' : a.status === 'gap' ? 'Gap' : 'Soon'),
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect your calendar',
+          buttonLabel: 'Connect Calendar',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View full appointment calendar' }, 'Full calendar'),
-      ]
     });
   },
 
   pipeline: (config, priority) => {
-    const columns = [
-      { label: 'Scheduled', count: 5, tone: 'ok' },
-      { label: 'In Progress', count: 3, tone: 'warn' },
-      { label: 'Completed', count: 12, tone: 'ok' },
-      { label: 'Waiting Parts', count: 2, tone: 'critical' },
-    ];
-    const jobs = [
-      { name: 'Refrigeration unit — walk-in', col: 'In Progress', days: 2 },
-      { name: 'Oven thermostat replacement', col: 'Waiting Parts', days: 4 },
-      { name: 'HVAC filter swap — kitchen', col: 'Completed', days: 0 },
-    ];
-    const total = columns.reduce((s, c) => s + c.count, 0);
     return Card({
       kicker: 'Job Pipeline',
-      title: total + ' active jobs across ' + columns.length + ' stages',
+      title: 'Active jobs',
       priority,
       children: [
-        React.createElement('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' } },
-          columns.map((c, i) =>
-            React.createElement('div', { key: i, style: { padding: '8px', borderRadius: 'var(--radius-sm)', background: 'var(--bg)', textAlign: 'center' } },
-              React.createElement('div', { className: 'metric-value', style: { fontSize: '24px' } }, c.count),
-              React.createElement('div', { className: 'metric-label' }, c.label)
-            )
-          )
-        ),
-        React.createElement('div', { className: 'list' },
-          jobs.map((j, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, j.name.slice(0, 38) + (j.name.length > 38 ? '...' : '')),
-              React.createElement('span', null,
-                Pill({ tone: j.col === 'Completed' ? 'ok' : j.col === 'Waiting Parts' ? 'critical' : j.col === 'In Progress' ? 'warn' : 'muted' }, j.col),
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect your job tracker',
+          buttonLabel: 'Connect',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View the job pipeline board' }, 'View board'),
-      ]
     });
   },
 
   retention: (config, priority) => {
-    const clients = [
-      { name: 'Maple Street Co.', visits: 14, lastVisit: '3 days ago', risk: 'low' },
-      { name: 'Brennan & Co.', visits: 3, lastVisit: '6 weeks ago', risk: 'high' },
-      { name: 'Helix Labs', visits: 8, lastVisit: '2 weeks ago', risk: 'medium' },
-    ];
-    const loyaltyRate = 72;
-    const avgReturnDays = 23;
-    const churn = clients.filter(c => c.risk === 'high').length;
     return Card({
       kicker: 'Client Retention',
-      title: churn > 0 ? churn + ' client' + (churn > 1 ? 's' : '') + ' at churn risk' : 'Retention looks healthy',
-      priority: priority || churn > 0,
+      title: 'Customer loyalty',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: loyaltyRate + '%', label: 'Loyalty rate', tone: 'ok' }),
-          React.createElement(Metric, { value: avgReturnDays, label: 'Avg return (days)' }),
-          React.createElement(Metric, { value: churn, label: 'Churn risk', tone: churn > 0 ? 'critical' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          clients.map((c, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, c.name),
-              React.createElement('span', null,
-                Pill({ tone: c.risk === 'low' ? 'ok' : c.risk === 'medium' ? 'warn' : 'critical' }, c.risk + ' risk'),
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect customer data',
+          buttonLabel: 'Connect',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Reach out to at-risk clients' }, 'Reach out'),
-      ]
     });
   },
 
   memberships: (config, priority) => {
-    const tiers = [
-      { name: 'Gold — Monthly', members: 84, mrr: 2520 },
-      { name: 'Silver — Monthly', members: 142, mrr: 2130 },
-      { name: 'Trial', members: 18, mrr: 0 },
-    ];
-    const totalMRR = tiers.reduce((s, t) => s + t.mrr, 0);
-    const activeMembers = tiers.reduce((s, t) => s + t.members, 0);
-    const newThisMonth = 12;
-    const churnRate = 3.2;
     return Card({
       kicker: 'Memberships',
-      title: '$' + totalMRR.toLocaleString() + ' MRR · ' + activeMembers + ' active members',
+      title: 'Active members',
       priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: '$' + totalMRR.toLocaleString(), label: 'MRR', tone: 'ok' }),
-          React.createElement(Metric, { value: '+' + newThisMonth, label: 'New this month', tone: 'ok' }),
-          React.createElement(Metric, { value: churnRate + '%', label: 'Churn', tone: churnRate > 5 ? 'critical' : 'warn' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          tiers.map((t, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, t.name),
-              React.createElement('span', { className: 'list-item-value' }, t.members + ' · $' + t.mrr.toLocaleString())
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect membership system',
+          buttonLabel: 'Connect',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Manage membership tiers' }, 'Manage tiers'),
-      ]
     });
   },
 
   routes: (config, priority) => {
-    const stops = [
-      { seq: 1, name: 'Warehouse pickup', time: '8:00 AM', done: true },
-      { seq: 2, name: 'Maple Street Co.', time: '9:15 AM', done: true },
-      { seq: 3, name: 'Brennan & Co.', time: '10:30 AM', done: false },
-      { seq: 4, name: 'Helix Labs', time: '11:45 AM', done: false },
-      { seq: 5, name: 'Return — restock', time: '1:00 PM', done: false },
-    ];
-    const completed = stops.filter(s => s.done).length;
-    const pct = Math.round((completed / stops.length) * 100);
-    const driveTimeMin = 94;
     return Card({
       kicker: 'Daily Route',
-      title: completed + ' of ' + stops.length + ' stops done · ' + pct + '%',
+      title: 'Delivery stops',
       priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: stops.length, label: 'Stops' }),
-          React.createElement(Metric, { value: Math.floor(driveTimeMin / 60) + 'h ' + (driveTimeMin % 60) + 'm', label: 'Drive time' }),
-          React.createElement(Metric, { value: pct + '%', label: 'Complete', tone: pct === 100 ? 'ok' : 'warn' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          stops.map((s, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label', style: s.done ? { textDecoration: 'line-through', color: 'var(--text-muted)' } : {} },
-                React.createElement('span', { style: { fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-muted)', marginRight: '8px' } }, '#' + s.seq),
-                s.name
-              ),
-              React.createElement('span', { className: 'list-item-value' }, s.time)
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Set up your routes',
+          buttonLabel: 'Set Up',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Open the route map' }, 'Open map'),
-      ]
     });
   },
 
   equipment: (config, priority) => {
-    const items = [
-      { name: 'Walk-in freezer', status: 'ok', note: 'Temp −2°F' },
-      { name: 'Convection oven #2', status: 'warn', note: 'Door seal — service 9/3' },
-      { name: 'Dishwasher (primary)', status: 'ok', note: 'Descale due 9/10' },
-      { name: 'Refrigeration — line', status: 'critical', note: 'Compressor failing' },
-    ];
-    const needsAttention = items.filter(i => i.status !== 'ok').length;
     return Card({
       kicker: 'Equipment',
-      title: needsAttention > 0 ? needsAttention + ' item' + (needsAttention > 1 ? 's' : '') + ' need attention' : 'All systems nominal',
-      priority: priority || needsAttention > 0,
+      title: 'Maintenance status',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: items.length, label: 'Tracked items' }),
-          React.createElement(Metric, { value: needsAttention, label: 'Need attention', tone: needsAttention > 0 ? 'warn' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          items.map((item, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', null,
-                React.createElement('span', { className: 'list-item-label', style: { display: 'block' } }, item.name),
-                React.createElement('span', { className: 'list-item-value', style: { display: 'block' } }, item.note)
-              ),
-              React.createElement('span', null,
-                Pill({ tone: item.status === 'ok' ? 'ok' : item.status === 'warn' ? 'warn' : 'critical' }, item.status)
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Log your equipment',
+          buttonLabel: 'Add Equipment',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View equipment maintenance log' }, 'Maintenance log'),
-      ]
     });
   },
 
   invoices: (config, priority) => {
-    const invoices = [
-      { client: 'Maple Street Co.', amount: '$1,240', status: 'paid', due: '8/20' },
-      { client: 'Brennan & Co.', amount: '$3,800', status: 'overdue', due: '8/10' },
-      { client: 'Helix Labs', amount: '$2,150', status: 'outstanding', due: '9/5' },
-      { client: 'Vertex Group', amount: '$950', status: 'outstanding', due: '9/8' },
-    ];
-    const paid = invoices.filter(i => i.status === 'paid').length;
-    const overdue = invoices.filter(i => i.status === 'overdue').length;
-    const outstanding = invoices.filter(i => i.status === 'outstanding').length;
-    const totalOutstanding = invoices
-      .filter(i => i.status !== 'paid')
-      .reduce((s, i) => s + parseInt(i.amount.replace(/[^0-9]/g, '')), 0);
-    const followUps = invoices.filter(i => i.status === 'overdue' || i.status === 'outstanding');
     return Card({
       kicker: 'Invoices',
-      title: overdue > 0 ? overdue + ' overdue invoice' + (overdue > 1 ? 's' : '') + ' — follow up' : 'All current',
-      priority: priority || overdue > 0,
+      title: 'Billing overview',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: '$' + totalOutstanding.toLocaleString(), label: 'Outstanding', tone: 'warn' }),
-          React.createElement(Metric, { value: paid, label: 'Paid', tone: 'ok' }),
-          React.createElement(Metric, { value: overdue, label: 'Overdue', tone: overdue > 0 ? 'critical' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          followUps.slice(0, 4).map((inv, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, inv.client),
-              React.createElement('span', null,
-                Pill({ tone: inv.status === 'overdue' ? 'critical' : 'warn' }, inv.amount + ' · ' + inv.status)
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect your invoicing',
+          buttonLabel: 'Connect',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Send invoice reminders' }, 'Send reminders'),
-      ]
     });
   },
 
   staff: (config, priority) => {
-    const employees = [
-      { name: 'Marco D.', hours: 42, role: 'Head Chef', commission: 480, gap: false },
-      { name: 'Sarah K.', hours: 38, role: 'Sous Chef', commission: 320, gap: false },
-      { name: 'Devon R.', hours: 28, role: 'Line Cook', commission: 150, gap: true },
-      { name: 'Lena T.', hours: 35, role: 'Pastry', commission: 280, gap: false },
-    ];
-    const totalHours = employees.reduce((s, e) => s + e.hours, 0);
-    const totalCommission = employees.reduce((s, e) => s + e.commission, 0);
-    const coverageGaps = employees.filter(e => e.gap).length;
     return Card({
       kicker: 'Staff',
-      title: coverageGaps > 0 ? coverageGaps + ' coverage gap' + (coverageGaps > 1 ? 's' : '') + ' this week' : 'Fully staffed',
-      priority: priority || coverageGaps > 0,
+      title: 'Your team',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: totalHours, label: 'Total hours' }),
-          React.createElement(Metric, { value: '$' + totalCommission.toLocaleString(), label: 'Commission', tone: 'ok' }),
-          React.createElement(Metric, { value: coverageGaps, label: 'Coverage gaps', tone: coverageGaps > 0 ? 'warn' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          employees.map((e, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', null,
-                React.createElement('span', { className: 'list-item-label', style: { display: 'block' } }, e.name + ' · ' + e.role),
-                React.createElement('span', { className: 'list-item-value', style: { display: 'block' } }, e.hours + 'h · $' + e.commission)
-              ),
-              React.createElement('span', null,
-                Pill({ tone: e.gap ? 'warn' : 'ok' }, e.gap ? 'Gap' : 'Covered')
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Add your staff',
+          buttonLabel: 'Add Staff',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View staff schedule' }, 'View schedule'),
-      ]
     });
   },
 
   expenses: (config, priority) => {
-    const categories = [
-      { name: 'Food & Ingredients', amount: 4200, budget: 4500 },
-      { name: 'Labor', amount: 6800, budget: 6500 },
-      { name: 'Rent', amount: 3200, budget: 3200 },
-      { name: 'Utilities', amount: 890, budget: 950 },
-      { name: 'Supplies', amount: 640, budget: 600 },
-    ];
-    const total = categories.reduce((s, c) => s + c.amount, 0);
-    const totalBudget = categories.reduce((s, c) => s + c.budget, 0);
-    const margin = Math.round(((totalBudget - total) / totalBudget) * 100);
-    const overBudget = categories.filter(c => c.amount > c.budget).length;
     return Card({
       kicker: 'Expenses',
-      title: '$' + total.toLocaleString() + ' this month',
-      priority: priority || overBudget > 0,
+      title: 'Monthly spending',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: '$' + total.toLocaleString(), label: 'Total expenses' }),
-          React.createElement(Metric, { value: margin + '%', label: 'Margin', tone: margin >= 0 ? 'ok' : 'critical' }),
-          React.createElement(Metric, { value: overBudget, label: 'Over budget', tone: overBudget > 0 ? 'warn' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          categories.map((c, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', { className: 'list-item-label' }, c.name),
-              React.createElement('span', null,
-                React.createElement('span', { className: 'list-item-value' }, '$' + c.amount.toLocaleString()),
-                ' ',
-                Pill({ tone: c.amount > c.budget ? 'critical' : 'ok' }, c.amount > c.budget ? 'Over' : 'Under')
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Connect your expenses',
+          buttonLabel: 'Connect',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'View expense breakdown' }, 'Breakdown'),
-        Pill({ tone: margin >= 0 ? 'ok' : 'critical' }, margin >= 0 ? 'Under budget' : 'Over budget'),
-      ]
     });
   },
 
   contacts: (config, priority) => {
-    const contacts = [
-      { name: 'Marcus Bell', company: 'Bell Hospitality', lastContact: '2 days ago', status: 'active' },
-      { name: 'Sofia Reyes', company: 'Reyes Events', lastContact: '5 days ago', status: 'follow-up' },
-      { name: 'James Chen', company: 'Chen Consulting', lastContact: '1 week ago', status: 'follow-up' },
-      { name: 'Priya Patel', company: 'Patel Group', lastContact: '3 weeks ago', status: 'dormant' },
-      { name: 'Owen Walsh', company: 'Walsh Catering', lastContact: '1 month ago', status: 'dormant' },
-    ];
-    const totalContacts = 148;
-    const newThisWeek = 7;
-    const followUps = contacts.filter(c => c.status === 'follow-up').length;
     return Card({
       kicker: 'Contacts',
-      title: followUps > 0 ? followUps + ' follow-up' + (followUps > 1 ? 's' : '') + ' needed' : 'All caught up',
-      priority: priority || followUps > 0,
+      title: 'Your network',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: totalContacts, label: 'Total contacts' }),
-          React.createElement(Metric, { value: '+' + newThisWeek, label: 'New this week', tone: 'ok' }),
-          React.createElement(Metric, { value: followUps, label: 'Follow-ups', tone: followUps > 0 ? 'warn' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          contacts.slice(0, 4).map((c, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', null,
-                React.createElement('span', { className: 'list-item-label', style: { display: 'block' } }, c.name),
-                React.createElement('span', { className: 'list-item-value', style: { display: 'block' } }, c.company + ' · ' + c.lastContact)
-              ),
-              React.createElement('span', null,
-                Pill({ tone: c.status === 'follow-up' ? 'warn' : c.status === 'dormant' ? 'muted' : 'ok' }, c.status)
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Import contacts',
+          buttonLabel: 'Import',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Add a new contact' }, 'Add contact'),
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Export contacts to CSV' }, 'Export'),
-      ]
     });
   },
 
   decisions: (config, priority) => {
-    const decisions = [
-      { title: 'Switch produce supplier', status: 'pending', context: 'Save ~$200/mo but shorter delivery window', date: '2 days ago' },
-      { title: 'Add weekend brunch service', status: 'pending', context: 'Projected +$1.2k/mo revenue, needs 1 new hire', date: '4 days ago' },
-      { title: 'Replace convection oven', status: 'decided', context: 'Approved $4,500 capex — service scheduled 9/15', date: '1 week ago' },
-      { title: 'Raise menu prices 8%', status: 'decided', context: 'Effective next Monday — update POS', date: '2 weeks ago' },
-    ];
-    const pending = decisions.filter(d => d.status === 'pending').length;
-    const decided = decisions.filter(d => d.status === 'decided').length;
     return Card({
       kicker: 'Decision Log',
-      title: pending > 0 ? pending + ' decision' + (pending > 1 ? 's' : '') + ' pending' : 'All decisions resolved',
-      priority: priority || pending > 0,
+      title: 'Pending decisions',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: pending, label: 'Pending', tone: pending > 0 ? 'warn' : 'ok' }),
-          React.createElement(Metric, { value: decided, label: 'Decided', tone: 'ok' }),
-          React.createElement(Metric, { value: decisions.length, label: 'Total logged' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          decisions.slice(0, 4).map((d, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', null,
-                React.createElement('span', { className: 'list-item-label', style: { display: 'block' } }, d.title),
-                React.createElement('span', { className: 'list-item-value', style: { display: 'block' } }, d.context)
-              ),
-              React.createElement('span', null,
-                Pill({ tone: d.status === 'pending' ? 'warn' : 'ok' }, d.status)
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Log your first decision',
+          buttonLabel: 'Get Started',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Get a second opinion on pending decisions' }, 'Second opinion'),
-        React.createElement('button', { className: 'card-action', onClick: () => {}, 'aria-label': 'Log a new decision' }, 'Log decision'),
-      ]
     });
   },
 
   staff_schedule: (config, priority) => {
-    const shifts = [
-      { name: 'Marco D.', role: 'Head Chef', start: '6:00 AM', end: '2:00 PM', status: 'on-shift' },
-      { name: 'Sarah K.', role: 'Sous Chef', start: '8:00 AM', end: '4:00 PM', status: 'on-shift' },
-      { name: 'Devon R.', role: 'Line Cook', start: '10:00 AM', end: '6:00 PM', status: 'scheduled' },
-      { name: 'Lena T.', role: 'Pastry', start: '12:00 PM', end: '8:00 PM', status: 'scheduled' },
-      { name: 'Tom B.', role: 'Dishwasher', start: '—', end: '—', status: 'gap' },
-    ];
-    const onShift = shifts.filter(s => s.status === 'on-shift').length;
-    const totalHours = shifts
-      .filter(s => s.status !== 'gap')
-      .reduce((s, sh) => {
-        const sh1 = parseTimeToHours(sh.start);
-        const sh2 = parseTimeToHours(sh.end);
-        const hours = sh2 - sh1;
-        return s + (hours < 0 ? hours + 24 : hours);
-      }, 0);
-    const gaps = shifts.filter(s => s.status === 'gap').length;
     return Card({
       kicker: 'Staff Schedule',
-      title: onShift + ' on shift · ' + (shifts.length - gaps) + ' scheduled today',
-      priority: priority || gaps > 0,
+      title: 'Today\'s shifts',
+      priority,
       children: [
-        React.createElement('div', { className: 'metric-row' },
-          React.createElement(Metric, { value: onShift, label: 'On shift now', tone: 'ok' }),
-          React.createElement(Metric, { value: totalHours + 'h', label: 'Hours scheduled' }),
-          React.createElement(Metric, { value: gaps, label: 'Coverage gaps', tone: gaps > 0 ? 'critical' : 'ok' }),
-        ),
-        React.createElement('div', { className: 'list' },
-          shifts.map((s, i) =>
-            React.createElement('div', { key: i, className: 'list-item' },
-              React.createElement('span', null,
-                React.createElement('span', { className: 'list-item-label', style: { display: 'block' } }, s.name + ' · ' + s.role),
-                React.createElement('span', { className: 'list-item-value', style: { display: 'block' } }, s.start === '—' ? 'No shift assigned' : s.start + ' — ' + s.end)
-              ),
-              React.createElement('span', null,
-                Pill({ tone: s.status === 'on-shift' ? 'ok' : s.status === 'gap' ? 'critical' : 'muted' }, s.status === 'on-shift' ? 'On shift' : s.status === 'gap' ? 'Gap' : 'Scheduled')
-              )
-            )
-          )
-        ),
+        EmptyCardState({
+          message: 'Set up scheduling',
+          buttonLabel: 'Set Up',
+        }),
       ],
-      footer: [
-        React.createElement('button', { className: 'card-action primary', onClick: () => {}, 'aria-label': 'Adjust the staff schedule' }, 'Adjust schedule'),
-      ]
     });
   },
 };

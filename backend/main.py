@@ -10,6 +10,7 @@ Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
 from __future__ import annotations
 
 import os, json, time, re, asyncio, logging
+import hashlib, hmac, secrets, base64
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 # V3-7: retain references to background tasks to prevent GC from cancelling them
 _background_tasks: set = set()
 
-from fastapi import FastAPI, HTTPException, Header, Body
+from fastapi import FastAPI, HTTPException, Header, Body, Depends, Request
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -91,6 +92,19 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
+
+# ── Auth config ──────────────────────────────────────────────────
+# Secret used to sign session tokens. Falls back to a random per-process
+# value if AUTH_SECRET is not set (tokens won't survive restart in that case).
+AUTH_SECRET = os.getenv("AUTH_SECRET", "")
+if not AUTH_SECRET:
+    AUTH_SECRET = secrets.token_hex(32)
+    logger.warning("AUTH_SECRET env var not set — using random per-process secret. Tokens will not survive restart.")
+
+# Password hashing parameters (PBKDF2-HMAC-SHA256)
+_PBKDF2_ITERATIONS = 100_000
+_SALT_BYTES = 16
+_TOKEN_TTL_SECONDS = 30 * 24 * 3600  # 30 days
 
 # ── Business-type-aware questions ───────────────────────────────
 # Q1 is always business type selection. Q2-Q13 adapt based on answer.
@@ -380,6 +394,26 @@ async def init_db():
     )
     """)
 
+    # ── Auth: users table ────────────────────────────────────────
+    await _turso_execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id TEXT PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+    )
+    """)
+
+    # ── Auth: link survey_sessions to users via user_id column ───
+    # ALTER TABLE ... ADD COLUMN is idempotent-safe: we swallow the
+    # "duplicate column" error for already-migrated databases.
+    try:
+        await _turso_execute("ALTER TABLE survey_sessions ADD COLUMN user_id TEXT")
+    except Exception as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+        logger.debug("init_db: survey_sessions.user_id column already exists: %s", e)
+
 
 async def _load_session(session_id: str) -> dict | None:
     """SELECT only — returns None if session not found. No INSERT."""
@@ -460,6 +494,196 @@ async def _save_profile(session_id: str, content: str):
             {"type": "text", "value": content},
         ]
     )
+
+
+# ── Auth: password hashing & token management ────────────────────
+def _hash_password(password: str) -> str:
+    """Hash a password using PBKDF2-HMAC-SHA256 with a random salt.
+    Returns 'pbkdf2_sha256$<iterations>$<salt_hex>$<hash_hex>'."""
+    salt = secrets.token_bytes(_SALT_BYTES)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${_PBKDF2_ITERATIONS}${salt.hex()}${dk.hex()}"
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored hash."""
+    try:
+        parts = stored_hash.split("$")
+        if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+            return False
+        iterations = int(parts[1])
+        salt = bytes.fromhex(parts[2])
+        expected = bytes.fromhex(parts[3])
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(dk, expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def _create_token(user_id: str) -> str:
+    """Create a signed session token.
+    Format: user_id:timestamp:hmac_sha256(user_id:timestamp, secret)
+    All base64url-encoded for URL safety.
+    """
+    ts = str(int(time.time()))
+    msg = f"{user_id}:{ts}"
+    sig = hmac.new(AUTH_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    payload = base64.urlsafe_b64encode(msg.encode()).decode().rstrip("=")
+    return f"{payload}.{sig}"
+
+
+def _verify_token(token: str) -> dict | None:
+    """Verify a session token. Returns {'user_id', 'issued_at'} or None.
+    Tokens expire after _TOKEN_TTL_SECONDS.
+    """
+    if not token or "." not in token:
+        return None
+    parts = token.split(".", 1)
+    if len(parts) != 2:
+        return None
+    payload_b64, sig = parts
+    # Restore padding
+    padding = 4 - (len(payload_b64) % 4)
+    if padding != 4:
+        payload_b64 += "=" * padding
+    try:
+        msg = base64.urlsafe_b64decode(payload_b64).decode()
+    except Exception:
+        return None
+    expected_sig = hmac.new(AUTH_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(sig, expected_sig):
+        return None
+    # Parse user_id:timestamp
+    if ":" not in msg:
+        return None
+    user_id, ts_str = msg.rsplit(":", 1)
+    try:
+        issued_at = int(ts_str)
+    except ValueError:
+        return None
+    # Check expiry
+    if time.time() - issued_at > _TOKEN_TTL_SECONDS:
+        return None
+    return {"user_id": user_id, "issued_at": issued_at}
+
+
+async def _get_user_by_email(email: str) -> dict | None:
+    """Look up a user by email. Returns row dict or None."""
+    rows = await _turso_query(
+        "SELECT user_id, email, password_hash, created_at FROM users WHERE email=?",
+        [{"type": "text", "value": email.lower().strip()}]
+    )
+    if rows:
+        return rows[0]
+    return None
+
+
+async def _get_user_by_id(user_id: str) -> dict | None:
+    """Look up a user by user_id. Returns row dict or None."""
+    rows = await _turso_query(
+        "SELECT user_id, email, created_at FROM users WHERE user_id=?",
+        [{"type": "text", "value": user_id}]
+    )
+    if rows:
+        return rows[0]
+    return None
+
+
+async def _link_session_to_user(session_id: str, user_id: str):
+    """Associate a survey_session with the authenticated user."""
+    try:
+        await _turso_execute(
+            "UPDATE survey_sessions SET user_id=? WHERE session_id=?",
+            [
+                {"type": "text", "value": user_id},
+                {"type": "text", "value": session_id},
+            ]
+        )
+    except Exception as e:
+        logger.debug("_link_session_to_user failed: %s", e)
+
+
+# ── Auth: dependency for protected endpoints ─────────────────────
+# Public endpoints that do NOT require auth
+_PUBLIC_PATHS = {
+    "/api/health",
+    "/api/auth/register",
+    "/api/auth/login",
+    "/api/survey/questions",
+}
+
+
+def _is_public_path(path: str) -> bool:
+    """Check if a path is public (no auth required)."""
+    if path in _PUBLIC_PATHS:
+        return True
+    # /api/survey/reset is auth-required when it's a POST, but we allow
+    # it as a public path only for GET (which doesn't exist). POST reset
+    # will be handled by the dependency check below.
+    if path == "/api/survey/reset":
+        return False
+    return False
+
+
+async def _auth_dependency(
+    request: Request,
+    authorization: Optional[str] = Header(None),
+) -> dict:
+    """FastAPI dependency: validates the Bearer token and returns user info.
+    Raises 401 if the token is missing or invalid.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Authentication required. Provide a Bearer token.")
+    token = authorization[7:]  # strip "Bearer "
+    token_data = _verify_token(token)
+    if token_data is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    user = await _get_user_by_id(token_data["user_id"])
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found.")
+    return {
+        "user_id": user["user_id"],
+        "email": user["email"],
+        "created_at": user.get("created_at"),
+    }
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Middleware that enforces auth on protected API endpoints.
+    Public endpoints (health, auth, questions) bypass auth.
+    Protected survey endpoints require a valid Bearer token.
+    """
+    path = request.url.path
+
+    # Only enforce auth on /api/ paths
+    if not path.startswith("/api/"):
+        response = await call_next(request)
+        return response
+
+    # Public endpoints skip auth
+    if _is_public_path(path):
+        response = await call_next(request)
+        return response
+
+    # All other /api/ endpoints require auth
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            {"detail": "Authentication required. Provide a Bearer token."},
+            status_code=401,
+        )
+    token = auth_header[7:]
+    token_data = _verify_token(token)
+    if token_data is None:
+        return JSONResponse(
+            {"detail": "Invalid or expired token."},
+            status_code=401,
+        )
+    # Attach user_id to request state for downstream handlers
+    request.state.user_id = token_data["user_id"]
+    response = await call_next(request)
+    return response
 
 
 def _get_state(sess: dict) -> dict:
@@ -1125,8 +1349,106 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
         yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
 
 
+# ── Auth endpoints ────────────────────────────────────────────────
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or "@" not in v or "." not in v:
+            raise ValueError("A valid email address is required")
+        if len(v) > 254:
+            raise ValueError("Email must be 254 characters or fewer")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if not v or len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if len(v) > 128:
+            raise ValueError("Password must be 128 characters or fewer")
+        return v
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/register")
+async def register(req: RegisterRequest):
+    """Register a new user. Returns a session token."""
+    # Check if email is already registered
+    existing = await _get_user_by_email(req.email)
+    if existing is not None:
+        return JSONResponse(
+            {"detail": "An account with this email already exists. Try logging in."},
+            status_code=409,
+        )
+
+    user_id = "u-" + secrets.token_hex(12)
+    password_hash = _hash_password(req.password)
+
+    try:
+        await _turso_execute(
+            """INSERT INTO users (user_id, email, password_hash) VALUES (?, ?, ?)""",
+            [
+                {"type": "text", "value": user_id},
+                {"type": "text", "value": req.email},
+                {"type": "text", "value": password_hash},
+            ]
+        )
+    except Exception as e:
+        if "unique" in str(e).lower():
+            return JSONResponse(
+                {"detail": "An account with this email already exists. Try logging in."},
+                status_code=409,
+            )
+        raise
+
+    token = _create_token(user_id)
+    return {
+        "token": token,
+        "user": {"user_id": user_id, "email": req.email},
+    }
+
+
+@app.post("/api/auth/login")
+async def login(req: LoginRequest):
+    """Log in an existing user. Returns a session token."""
+    email = req.email.strip().lower()
+    user = await _get_user_by_email(email)
+    if user is None:
+        return JSONResponse(
+            {"detail": "Invalid email or password."},
+            status_code=401,
+        )
+
+    if not _verify_password(req.password, user.get("password_hash", "")):
+        return JSONResponse(
+            {"detail": "Invalid email or password."},
+            status_code=401,
+        )
+
+    token = _create_token(user["user_id"])
+    return {
+        "token": token,
+        "user": {"user_id": user["user_id"], "email": user["email"]},
+    }
+
+
+@app.get("/api/auth/me")
+async def get_me(user: dict = Depends(_auth_dependency)):
+    """Return the current user's info from the token."""
+    return {"user": user}
+
+
 @app.post("/api/survey/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, request: Request):
     if not await _check_rate_limit(req.session_id):
         return JSONResponse(
             {"error": "Rate limit exceeded. Please slow down."},
@@ -1134,6 +1456,11 @@ async def chat(req: ChatRequest):
         )
 
     sess = await _load_or_create_session(req.session_id)
+
+    # Link this session to the authenticated user (from auth middleware)
+    user_id = getattr(request.state, "user_id", None)
+    if user_id:
+        await _link_session_to_user(req.session_id, user_id)
 
     # Detect business type and get the right questions for this session
     business_type = _detect_business_type(sess.get("conversation", []))
@@ -1460,13 +1787,18 @@ async def _clear_checkin_session(session_id: str):
 # No in-memory dict, no TTL, no lock needed — the database handles it all.
 
 @app.post("/api/survey/checkin")
-async def checkin_chat(req: ChatRequest):
+async def checkin_chat(req: ChatRequest, request: Request):
     """Daily check-in mode for returning users who completed onboarding."""
     if not await _check_rate_limit(req.session_id):
         return JSONResponse(
             {"error": "Rate limit exceeded. Please slow down."},
             status_code=429,
         )
+
+    # Link this session to the authenticated user (from auth middleware)
+    user_id = getattr(request.state, "user_id", None)
+    if user_id:
+        await _link_session_to_user(req.session_id, user_id)
 
     if not await _has_completed_onboarding(req.session_id):
         return JSONResponse({"error": "Onboarding not complete", "mode": "onboarding"})
