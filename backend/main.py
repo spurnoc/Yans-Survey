@@ -20,6 +20,10 @@ from email.mime.multipart import MIMEMultipart
 from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
+
+# V3-7: retain references to background tasks to prevent GC from cancelling them
+_background_tasks: set = set()
+
 from fastapi import FastAPI, HTTPException, Header, Body
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -73,12 +77,12 @@ ANALYSIS_MODEL = os.getenv("ANALYSIS_MODEL", "spur-glm-air")
 TURSO_DB_URL = os.getenv("TURSO_DB_URL", "")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 
-# Email settings
+# Email settings (V3-12: no hardcoded fallbacks — email is skipped if unset)
 SMTP_HOST = os.getenv("SMTP_HOST", "mail.spuric.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "noc@spuric.com")
+SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
-EMAIL_TO = os.getenv("EMAIL_TO", "akif@spuric.com")
+EMAIL_TO = os.getenv("EMAIL_TO", "")
 
 # ── Business-type-aware questions ───────────────────────────────
 # Q1 is always business type selection. Q2-Q13 adapt based on answer.
@@ -184,26 +188,27 @@ def _detect_business_type(conversation: list) -> str:
     for btype in BUSINESS_TYPES:
         if btype.lower() in first_answer:
             return btype
-    # Fuzzy match
-    if "restaurant" in first_answer or "cafe" in first_answer or "food" in first_answer:
+    # Fuzzy match — use word-boundary matching to avoid false positives (V3-6).
+    # E.g. 'shop' should not match 'photoshop', 'detail' should not match 'details'.
+    if re.search(r'\b(restaurant|cafe|food)\b', first_answer):
         return "Restaurant/Cafe"
-    if "salon" in first_answer or "barber" in first_answer or "spa" in first_answer:
+    if re.search(r'\b(salon|barber|spa)\b', first_answer):
         return "Salon/Spa/Barber"
-    if "plumb" in first_answer or "electric" in first_answer or "hvac" in first_answer:
+    if re.search(r'\b(plumb|electric|hvac)\w*\b', first_answer):
         return "Plumber/Electrician/HVAC"
-    if "retail" in first_answer or "boutique" in first_answer or "shop" in first_answer:
+    if re.search(r'\b(retail|boutique)\b', first_answer) or re.search(r'\b(shop|store)\b', first_answer):
         return "Retail/Boutique"
-    if "gym" in first_answer or "fitness" in first_answer or "studio" in first_answer:
+    if re.search(r'\b(gym|fitness|studio)\b', first_answer):
         return "Gym/Fitness Studio"
-    if "landscap" in first_answer or "lawn" in first_answer:
+    if re.search(r'\b(landscap|lawn)\w*\b', first_answer):
         return "Landscaping/Lawn Care"
-    if "auto" in first_answer or "repair" in first_answer or "detail" in first_answer:
+    if re.search(r'\b(auto|repair|detail)\w*\b', first_answer) or re.search(r'\b(auto shop|repair shop)\b', first_answer):
         return "Auto Repair/Detailing"
-    if "clean" in first_answer:
+    if re.search(r'\bclean\w*\b', first_answer):
         return "Cleaning Service"
-    if "photo" in first_answer or "video" in first_answer:
+    if re.search(r'\b(photo|video)\w*\b', first_answer):
         return "Photography/Video"
-    if "real estate" in first_answer or "realty" in first_answer:
+    if re.search(r'\b(real estate|realty)\b', first_answer):
         return "Real Estate"
     return "Other"
 
@@ -327,6 +332,9 @@ async def init_db():
     try:
         await _turso_execute("ALTER TABLE daily_checkins ADD COLUMN summary TEXT DEFAULT ''")
     except Exception as e:
+        # Only swallow the "duplicate column" error — re-raise anything else (EDGE-4)
+        if 'duplicate column' not in str(e).lower():
+            raise
         logger.debug("init_db: summary column already exists: %s", e)
     await _turso_execute("""
     CREATE TABLE IF NOT EXISTS card_priorities (
@@ -632,7 +640,9 @@ async def _build_checkin_prompt(session_id: str, conversation: list, checkin_ste
         last_checkin_section += f"(Last check-in was on {last_checkin['created_at']})\n"
 
     # Business-type-specific check-in questions (defined at module level)
-    business_type = await _detect_business_type_from_session(session_id)
+    # Reuse the onboarding conversation already loaded above (avoid a redundant
+    # _load_session / Turso round-trip — V3-1/V3-3).
+    business_type = _detect_business_type(conv) if conv else "Other"
 
     CHECKIN_QUESTIONS = CHECKIN_QUESTIONS_BY_TYPE.get(business_type, DEFAULT_CHECKIN)
 
@@ -708,6 +718,7 @@ async def _check_rate_limit(session_id: str) -> bool:
     now = time.time()
     window_start = now - _RATE_LIMIT_WINDOW
 
+    expired_keys: list[str] = []
     async with _rate_limit_lock:
         # Get or create the timestamp list for this session
         timestamps = _rate_limit_store.get(session_id, [])
@@ -722,10 +733,17 @@ async def _check_rate_limit(session_id: str) -> bool:
         timestamps.append(now)
         _rate_limit_store[session_id] = timestamps
 
-        # Opportunistic cleanup of other expired sessions to prevent unbounded growth
+        # Collect expired keys to clean OUTSIDE the lock (V3-2)
         if len(_rate_limit_store) > 1000:
-            expired_keys = [k for k, ts in _rate_limit_store.items() if not any(t > window_start for t in ts)]
-            for k in expired_keys:
+            expired_keys = [k for k, ts in _rate_limit_store.items()
+                           if not any(t > window_start for t in ts)]
+
+    # Delete expired keys outside the lock to avoid O(N) cleanup under lock
+    for k in expired_keys:
+        async with _rate_limit_lock:
+            # Re-check under lock to avoid deleting a key that was just updated
+            ts_list = _rate_limit_store.get(k, [])
+            if ts_list and not any(t > window_start for t in ts_list):
                 del _rate_limit_store[k]
 
     return True
@@ -841,7 +859,11 @@ async def _run_analysis(question_text: str, answer: str, session_id: str):
 
 # ── Email transcript on survey completion ───────────────────────
 async def _send_transcript_email(sess: dict):
-    """Send the survey transcript to akif@spuric.com. Best-effort."""
+    """Send the survey transcript via email. Best-effort."""
+    # V3-12: don't send if email is not configured — no hardcoded fallbacks
+    if not EMAIL_TO or not SMTP_USER:
+        logger.info("Email not sent - EMAIL_TO or SMTP_USER not configured")
+        return
     try:
         conv = sess["conversation"]
         # Build readable transcript
@@ -921,7 +943,7 @@ async def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: 
     profile_section = ""
     if profile:
         if len(profile) > 1500:
-            profile = profile[-1500:]
+            profile = profile[-800:]
         profile_section = (
             "\nBEHAVIORAL PROFILE (what you've learned about the business owner so far — adapt your questioning style accordingly):\n"
             f"{profile}\n"
@@ -960,12 +982,12 @@ Respond as plain text. Just the reaction and the question. No markers, no JSON, 
 def _parse_response(text: str) -> tuple[str, list[str]]:
     """Extract CHOICES marker from AI response. Returns (clean_text, choices_list)."""
     choices = []
-    choices_match = re.search(r'CHOICES:\s*(.+)', text, re.IGNORECASE)
+    choices_match = re.search(r'^CHOICES:\s*(.+)', text, re.MULTILINE | re.IGNORECASE)
     if choices_match:
         choices_str = choices_match.group(1).strip()
         choices = [c.strip() for c in choices_str.split('|') if c.strip()]
 
-    clean_text = re.sub(r'CHOICES:\s*.+', '', text, flags=re.IGNORECASE)
+    clean_text = re.sub(r'^CHOICES:\s*.+', '', text, flags=re.MULTILINE | re.IGNORECASE)
     clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
     return clean_text, choices
 
@@ -1059,8 +1081,10 @@ async def chat(req: ChatRequest):
 
     sess["conversation"].append({"role": "user", "content": req.answer})
 
-    # Fire behavioral analysis in the background
-    asyncio.create_task(_run_analysis(current_q_text, req.answer, sess["session_id"]))
+    # Fire behavioral analysis in the background (V3-7: retain task reference)
+    task = asyncio.create_task(_run_analysis(current_q_text, req.answer, sess["session_id"]))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
     answered_q_id = current_q["id"]
     answered_q_text = current_q_text
@@ -1091,7 +1115,10 @@ async def chat(req: ChatRequest):
         full_response = ""
         async for chunk in gen:
             if chunk.startswith("data: {") and '"content"' in chunk:
-                full_response += json.loads(chunk[6:])["content"]
+                try:
+                    full_response += json.loads(chunk[6:])["content"]
+                except (json.JSONDecodeError, KeyError):
+                    pass  # V3-5: malformed JSON that passes startswith check
             yield chunk
 
         # Parse choices from the response
@@ -1110,8 +1137,9 @@ async def chat(req: ChatRequest):
             yield f"data: {json.dumps({'error': f'Save failed: {str(save_err)[:200]}'})}\n\n"
 
         state = _get_state(sess)
-        active_questions = _get_questions_for_type(_detect_business_type(sess.get("conversation", [])))
-        is_done = sess['q_index'] >= len(active_questions)
+        # Use total_questions from state (already computed) instead of
+        # re-detecting business type and re-querying question count (V3-9)
+        is_done = sess['q_index'] >= state['total_questions']
         yield f"data: {json.dumps({'state': state, 'choices': choices, 'done': is_done})}\n\n"
 
         # Send transcript email when survey completes
@@ -1120,9 +1148,11 @@ async def chat(req: ChatRequest):
                 await _send_transcript_email(sess)
             except Exception as e:
                 logger.debug("send_transcript_email failed: %s", e)
-            # Run card selection engine in background
+            # Run card selection engine in background (V3-7: retain task reference)
             try:
-                asyncio.create_task(_run_card_selection(sess["session_id"]))
+                task = asyncio.create_task(_run_card_selection(sess["session_id"]))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
             except Exception as e:
                 logger.debug("create_task _run_card_selection failed: %s", e)
 
@@ -1203,7 +1233,7 @@ async def _run_card_selection(session_id: str):
                     "'staff_schedule' for shift planning. Don't select both unless the business explicitly mentions both costs and scheduling.\n"
                 )},
                 {"role": "user", "content": (
-                    f"Behavioral profile:\n{profile[:800] if profile else 'None yet'}\n\n"
+                    f"Behavioral profile:\n{profile[-800:] if profile else 'None yet'}\n\n"
                     f"Survey conversation:\n{conv_text}"
                 )},
             ],
@@ -1395,7 +1425,10 @@ async def checkin_chat(req: ChatRequest):
         full_response = ""
         async for chunk in gen:
             if chunk.startswith("data: {") and '"content"' in chunk:
-                full_response += json.loads(chunk[6:])["content"]
+                try:
+                    full_response += json.loads(chunk[6:])["content"]
+                except (json.JSONDecodeError, KeyError):
+                    pass  # V3-5: malformed JSON that passes startswith check
             yield chunk
 
         # Add AI response to conversation
@@ -1404,9 +1437,11 @@ async def checkin_chat(req: ChatRequest):
             # Check if check-in is complete
             is_done = conv["step"] >= total_steps
 
-            # Run analysis and save when done
+            # Run analysis and save when done (V3-7: retain task reference)
             if is_done:
-                asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
+                task = asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
+                _background_tasks.add(task)
+                task.add_done_callback(_background_tasks.discard)
                 # Clear the in-memory conversation (pop avoids KeyError on concurrent requests)
                 checkin_chat._conversations.pop(checkin_key, None)
             # Read step inside the lock to avoid reading conv after release

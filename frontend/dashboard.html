@@ -496,18 +496,27 @@ function getSessionId() {
   return params.get('session') || localStorage.getItem('survey_session_id') || '';
 }
 
+function parseTimeToHours(timeStr) {
+  // Parses 12-hour time strings (e.g., '6:00 AM', '2:00 PM') into decimal hours.
+  const match = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
+  if (!match) return 0;
+  let hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  const meridiem = match[3].toUpperCase();
+  if (meridiem === 'AM' && hour === 12) hour = 0;    // 12 AM = midnight → 0
+  if (meridiem === 'PM' && hour !== 12) hour += 12;   // 1–11 PM → 13–23
+  return hour + minute / 60;
+}
+
 async function fetchData(sessionId) {
-  const timeout = 30000;
-  const controller = () => {
-    const c = new AbortController();
-    setTimeout(() => c.abort(), timeout);
-    return c.signal;
-  };
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 30000);
+  const signal = controller.signal;
   const [transcriptResp, profileResp, checkinStatusResp, businessProfileResp] = await Promise.all([
-    fetch(`${API}/transcript?session_id=${sessionId}`, { signal: controller() }).then(r => r.json()),
-    fetch(`${API}/profile/${sessionId}`, { signal: controller() }).then(r => r.ok ? r.text() : ''),
-    fetch(`${API}/checkin/status?session_id=${sessionId}`, { signal: controller() }).then(r => r.json()),
-    fetch(`${API}/business-profile/${sessionId}`, { signal: controller() }).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`${API}/transcript?session_id=${sessionId}`, { signal }).then(r => r.json()),
+    fetch(`${API}/profile/${sessionId}`, { signal }).then(r => r.ok ? r.text() : ''),
+    fetch(`${API}/checkin/status?session_id=${sessionId}`, { signal }).then(r => r.json()),
+    fetch(`${API}/business-profile/${sessionId}`, { signal }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   return {
     transcript: transcriptResp,
@@ -1374,9 +1383,10 @@ const CARDS = {
     const totalHours = shifts
       .filter(s => s.status !== 'gap')
       .reduce((s, sh) => {
-        const sh1 = parseInt(sh.start) + (sh.start.includes('PM') ? 12 : 0);
-        const sh2 = parseInt(sh.end) + (sh.end.includes('PM') ? 12 : 0);
-        return s + (sh2 - sh1);
+        const sh1 = parseTimeToHours(sh.start);
+        const sh2 = parseTimeToHours(sh.end);
+        const hours = sh2 - sh1;
+        return s + (hours < 0 ? hours + 24 : hours);
       }, 0);
     const gaps = shifts.filter(s => s.status === 'gap').length;
     return Card({
