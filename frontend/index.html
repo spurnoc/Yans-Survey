@@ -833,7 +833,8 @@ function autoGrow(el) {
 
 async function resetSurvey() {
   if (!confirm('Start over? This clears the conversation.')) return;
-  await fetchWithTimeout(`${API}/reset?session_id=${sessionId}`, { method: 'POST' });
+  const resp = await fetchWithTimeout(`${API}/reset?session_id=${sessionId}`, { method: 'POST' });
+  if (!resp.ok) { alert('Reset failed. Please try again.'); return; }
   location.reload();
 }
 

@@ -41,8 +41,16 @@ async def add_security_headers(request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "connect-src 'self'; "
+        "img-src 'self' data:"
+    )
     return response
 
 app.add_middleware(
@@ -159,9 +167,6 @@ QUESTIONS_BY_TYPE = {
 # Q1 is always the business type question
 Q1 = {"id": 1, "text": "What kind of business do you run?", "type": "choice", "tag": "business_type"}
 
-# Flatten for backwards compatibility — used by /api/survey/questions
-QUESTIONS = [Q1] + UNIVERSAL_QUESTIONS
-
 def _get_questions_for_type(business_type: str) -> list:
     """Get the full 13-question set for a specific business type."""
     type_questions = QUESTIONS_BY_TYPE.get(business_type, QUESTIONS_BY_TYPE["Other"])
@@ -274,9 +279,13 @@ async def _turso_query(sql: str, args: list = None) -> list[dict]:
         for v in row:
             if isinstance(v, dict):
                 val = v.get("value")
-                # Try to convert numeric strings back to int
-                if val and val.lstrip('-').isdigit():
-                    val = int(val)
+                # Try to convert numeric strings back to int or float
+                if val and val.lstrip('-').replace('.', '').isdigit():
+                    try:
+                        num = float(val)
+                        val = int(num) if num == int(num) else num
+                    except (ValueError, TypeError):
+                        pass
                 values.append(val)
             else:
                 values.append(v)
@@ -535,6 +544,48 @@ CHECKIN_QUESTIONS_BY_TYPE = {
         "Ask how class attendance has been today — full or quiet?",
         "Ask if anything is stressing them out — member cancellations, staffing?",
         "Ask if they had any wins since last time — new signups, great classes?",
+        "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
+    ],
+    "Landscaping/Lawn Care": [
+        "Ask how their day is going. Keep it casual.",
+        "Ask how many jobs are on the schedule today — is it a full day?",
+        "Ask if anything is stressing them out — weather, equipment, client issues?",
+        "Ask if they had any wins since last time — new clients, referrals, good feedback?",
+        "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
+    ],
+    "Auto Repair/Detailing": [
+        "Ask how their day is going. Keep it casual.",
+        "Ask how many cars are in the shop today — what stage are they at?",
+        "Ask if anything is stressing them out — parts delays, difficult customers, backlog?",
+        "Ask if they had any wins since last time — big jobs done, repeat customers, good reviews?",
+        "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
+    ],
+    "Cleaning Service": [
+        "Ask how their day is going. Keep it casual.",
+        "Ask how many jobs they have today — is it a packed schedule?",
+        "Ask if anything is stressing them out — staffing, supplies, last-minute add-ons?",
+        "Ask if they had any wins since last time — new clients, referrals, good feedback?",
+        "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
+    ],
+    "Photography/Video": [
+        "Ask how their day is going. Keep it casual.",
+        "Ask what they're working on today — shoots, editing, client deliverables?",
+        "Ask if anything is stressing them out — deadlines, client communication, backlog?",
+        "Ask if they had any wins since last time — new bookings, great shots, happy clients?",
+        "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
+    ],
+    "Real Estate": [
+        "Ask how their day is going. Keep it casual.",
+        "Ask what's on their plate today — showings, listings, client calls?",
+        "Ask if anything is stressing them out — deals falling through, slow market, leads going cold?",
+        "Ask if they had any wins since last time — new listings, closed deals, good referrals?",
+        "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
+    ],
+    "Other": [
+        "Ask how their day is going. Keep it casual.",
+        "Ask what's on their plate today — what's the main thing they're dealing with?",
+        "Ask if anything is stressing them out right now. If they mentioned stress last time, ask how that went.",
+        "Ask if they had any wins since last time — anything go well?",
         "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
     ],
 }
@@ -931,8 +982,6 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
     ``content`` deltas (some models only emit ``reasoning``), retries
     as a non-streaming request and emits the full text in 3-char chunks.
     """
-    full_response = ""
-
     if not SPUR_DEMO_API_KEY:
         yield f"data: {json.dumps({'error': 'No API key configured'})}\n\n"
         return
@@ -971,7 +1020,6 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
                         content = delta.get("content")
                         if content:
                             got_content = True
-                            full_response += content
                             yield f"data: {json.dumps({'content': content})}\n\n"
                     except (json.JSONDecodeError, IndexError):
                         continue
@@ -980,16 +1028,13 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
                 if not got_content:
                     resp2 = await _spur_chat_completion(messages, model, max_tokens=max_tokens, timeout=90.0)
                     if resp2.status_code == 200:
-                        full_response = _extract_llm_content(resp2.json())
-                        if full_response:
-                            for i in range(0, len(full_response), 3):
-                                yield f"data: {json.dumps({'content': full_response[i:i+3]})}\n\n"
+                        fallback_text = _extract_llm_content(resp2.json())
+                        if fallback_text:
+                            for i in range(0, len(fallback_text), 3):
+                                yield f"data: {json.dumps({'content': fallback_text[i:i+3]})}\n\n"
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
-
-    # Can't return value from async generator — caller reads full_response
-    # via the _full_response sentinel yielded at the end
 
 
 @app.post("/api/survey/chat")
@@ -1093,7 +1138,7 @@ AVAILABLE_CARDS = [
     {"id": "social", "name": "Social Pulse", "description": "Instagram/Facebook engagement, posting cadence"},
     {"id": "catering", "name": "Catering Pipeline", "description": "Open quotes, follow-ups, pipeline value"},
     {"id": "inventory", "name": "Inventory Tracker", "description": "Supply schedule, low stock alerts"},
-    {"id": "staff", "name": "Staff & Labor", "description": "Hours, costs, coverage gaps"},
+    {"id": "staff", "name": "Staff & Labor", "description": "Staff costs, labor expenses, total hours"},
     {"id": "expenses", "name": "Expense Tracker", "description": "Food costs, overhead, margins"},
     {"id": "checklist", "name": "Daily Checklist", "description": "Morning routine, prep list, priorities"},
     {"id": "goals", "name": "Goal Tracker", "description": "Monthly targets, progress bars"},
@@ -1107,7 +1152,7 @@ AVAILABLE_CARDS = [
     {"id": "routes", "name": "Routes", "description": "Daily stops, drive time, completion rate"},
     {"id": "equipment", "name": "Equipment", "description": "Tool/equipment status, maintenance schedule"},
     {"id": "invoices", "name": "Invoices", "description": "Outstanding/paid/overdue, follow-up list"},
-    {"id": "staff_schedule", "name": "Staff Schedule", "description": "Employee hours, coverage, commission tracker"},
+    {"id": "staff_schedule", "name": "Staff Schedule", "description": "Shift planning, coverage gaps, who's working today"},
 ]
 
 async def _run_card_selection(session_id: str):
@@ -1153,7 +1198,9 @@ async def _run_card_selection(session_id: str):
                     "- ui_density: 'simple' if they track things in their head or are tech-averse, "
                     "'detailed' if they use spreadsheets/analytics, 'standard' otherwise\n"
                     "- business_name: extract from conversation if mentioned, otherwise 'Your Business'\n"
-                    "- Respond with ONLY the JSON, no other text"
+                    "- Respond with ONLY the JSON, no other text\n"
+                    "Note: 'staff' and 'staff_schedule' are different — select 'staff' for labor costs, "
+                    "'staff_schedule' for shift planning. Don't select both unless the business explicitly mentions both costs and scheduling.\n"
                 )},
                 {"role": "user", "content": (
                     f"Behavioral profile:\n{profile[:800] if profile else 'None yet'}\n\n"
@@ -1360,10 +1407,12 @@ async def checkin_chat(req: ChatRequest):
             # Run analysis and save when done
             if is_done:
                 asyncio.create_task(_run_checkin_analysis(req.session_id, conv["messages"]))
-                # Clear the in-memory conversation
-                del checkin_chat._conversations[checkin_key]
+                # Clear the in-memory conversation (pop avoids KeyError on concurrent requests)
+                checkin_chat._conversations.pop(checkin_key, None)
+            # Read step inside the lock to avoid reading conv after release
+            conv_step_out = conv["step"]
 
-        yield f"data: {json.dumps({'done': is_done, 'mode': 'checkin', 'step': conv['step'], 'total_steps': total_steps})}\n\n"
+        yield f"data: {json.dumps({'done': is_done, 'mode': 'checkin', 'step': conv_step_out, 'total_steps': total_steps})}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(sse_stream(), media_type="text/event-stream")
@@ -1445,7 +1494,7 @@ async def reset(session_id: str):
 
 @app.get("/api/survey/questions")
 async def get_questions():
-    return {"questions": QUESTIONS}
+    return {"questions": _get_questions_for_type("Other")}
 
 
 @app.get("/api/survey/profile/{session_id}")
