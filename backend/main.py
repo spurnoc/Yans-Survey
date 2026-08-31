@@ -9,7 +9,7 @@ Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
 """
 from __future__ import annotations
 
-import os, json, time, re, asyncio, logging
+import os, json, time, re, asyncio, logging, csv, io
 import hashlib, hmac, secrets, base64
 from typing import Optional
 from datetime import datetime, timezone
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 _background_tasks: set = set()
 
 from fastapi import FastAPI, HTTPException, Header, Body, Depends, Request
-from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
@@ -432,6 +432,73 @@ async def init_db():
     )
     """)
 
+    # ── Multi-user businesses ───────────────────────────────────────
+    await _turso_execute("""
+    CREATE TABLE IF NOT EXISTS businesses (
+        business_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+    )
+    """)
+    await _turso_execute("""
+    CREATE TABLE IF NOT EXISTS business_members (
+        business_id INTEGER NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT DEFAULT 'owner',
+        invited_at TEXT DEFAULT (datetime('now')),
+        joined_at TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (business_id, user_id)
+    )
+    """)
+    await _turso_execute("""
+    CREATE TABLE IF NOT EXISTS business_invites (
+        token TEXT PRIMARY KEY,
+        business_id INTEGER NOT NULL,
+        email TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        accepted_at TEXT
+    )
+    """)
+
+    # Link survey_sessions and checkin_sessions to business_id (idempotent)
+    for _tbl in ("survey_sessions", "checkin_sessions"):
+        try:
+            await _turso_execute(f"ALTER TABLE {_tbl} ADD COLUMN business_id INTEGER")
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+            logger.debug("init_db: %s.business_id column already exists: %s", _tbl, e)
+
+
+# ── Business membership helpers ──────────────────────────────────
+async def _get_user_business_id(user_id: str) -> int | None:
+    """Return the business_id the user belongs to, or None."""
+    try:
+        rows = await _turso_query(
+            "SELECT business_id FROM business_members WHERE user_id=? ORDER BY joined_at ASC LIMIT 1",
+            [{"type": "text", "value": user_id}]
+        )
+        if rows:
+            return rows[0].get("business_id")
+    except Exception as e:
+        logger.debug("_get_user_business_id failed: %s", e)
+    return None
+
+
+async def _link_session_to_business(session_id: str, business_id: int, table: str = "survey_sessions"):
+    """Associate a session with a business (best-effort)."""
+    try:
+        await _turso_execute(
+            f"UPDATE {table} SET business_id=? WHERE session_id=?",
+            [
+                {"type": "integer", "value": str(business_id)},
+                {"type": "text", "value": session_id},
+            ]
+        )
+    except Exception as e:
+        logger.debug("_link_session_to_business failed: %s", e)
+
 
 async def _load_session(session_id: str) -> dict | None:
     """SELECT only — returns None if session not found. No INSERT."""
@@ -633,8 +700,13 @@ _PUBLIC_PATHS = {
 
 
 def _is_public_path(path: str) -> bool:
-    """Check if a path is public (no auth required)."""
+    """Check if a path is public (no auth required) or handles its own auth."""
     if path in _PUBLIC_PATHS:
+        return True
+    # Admin endpoints handle their own auth via ADMIN_TOKEN — bypass
+    # the user auth middleware so they return 404 when ADMIN_TOKEN
+    # is not set, rather than being blocked by the Bearer token check.
+    if path.startswith("/api/admin/"):
         return True
     # /api/survey/reset is auth-required when it's a POST, but we allow
     # it as a public path only for GET (which doesn't exist). POST reset
@@ -745,6 +817,26 @@ async def _get_latest_checkin(session_id: str) -> dict | None:
             "created_at": row.get("created_at"),
         }
     return None
+
+
+async def _get_all_checkins(session_id: str) -> list[dict]:
+    """Get all daily check-ins for a session, ordered oldest → newest."""
+    rows = await _turso_query(
+        "SELECT * FROM daily_checkins WHERE session_id=? ORDER BY created_at ASC",
+        [{"type": "text", "value": session_id}]
+    )
+    checkins = []
+    for row in rows:
+        checkins.append({
+            "id": row.get("id"),
+            "conversation": json.loads(row.get("conversation") or "[]"),
+            "stress_points": json.loads(row.get("stress_points") or "[]"),
+            "wins": json.loads(row.get("wins") or "[]"),
+            "priorities": json.loads(row.get("priorities") or "[]"),
+            "summary": row.get("summary") or "",
+            "created_at": row.get("created_at"),
+        })
+    return checkins
 
 
 async def _save_checkin(session_id: str, conversation: list, stress_points: list, wins: list, priorities: list, summary: str = ""):
@@ -1480,6 +1572,10 @@ async def chat(req: ChatRequest, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if user_id:
         await _link_session_to_user(req.session_id, user_id)
+        # Also link to the user's business if they belong to one
+        biz_id = await _get_user_business_id(user_id)
+        if biz_id is not None:
+            await _link_session_to_business(req.session_id, biz_id, "survey_sessions")
 
     # Detect business type and get the right questions for this session
     business_type = _detect_business_type(sess.get("conversation", []))
@@ -1818,6 +1914,10 @@ async def checkin_chat(req: ChatRequest, request: Request):
     user_id = getattr(request.state, "user_id", None)
     if user_id:
         await _link_session_to_user(req.session_id, user_id)
+        # Also link to the user's business if they belong to one
+        biz_id = await _get_user_business_id(user_id)
+        if biz_id is not None:
+            await _link_session_to_business(req.session_id, biz_id, "checkin_sessions")
 
     if not await _has_completed_onboarding(req.session_id):
         return JSONResponse({"error": "Onboarding not complete", "mode": "onboarding"})
@@ -1970,10 +2070,24 @@ async def get_profile(session_id: str):
 
 
 @app.get("/api/survey/profiles")
-async def list_profiles():
-    rows = await _turso_query(
-        "SELECT session_id, length(profile) as size, updated_at FROM survey_profiles WHERE profile != '' ORDER BY updated_at DESC"
-    )
+async def list_profiles(request: Request):
+    """List behavioral profiles. Filters by business_id when the user belongs to a business."""
+    user_id = getattr(request.state, "user_id", None)
+    business_id = await _get_user_business_id(user_id) if user_id else None
+    if business_id is not None:
+        # Only show profiles for sessions linked to this business
+        rows = await _turso_query(
+            """SELECT sp.session_id, length(sp.profile) as size, sp.updated_at
+               FROM survey_profiles sp
+               JOIN survey_sessions ss ON sp.session_id = ss.session_id
+               WHERE sp.profile != '' AND ss.business_id=?
+               ORDER BY sp.updated_at DESC""",
+            [{"type": "integer", "value": str(business_id)}]
+        )
+    else:
+        rows = await _turso_query(
+            "SELECT session_id, length(profile) as size, updated_at FROM survey_profiles WHERE profile != '' ORDER BY updated_at DESC"
+        )
     profiles = [{"session_id": r["session_id"], "size_bytes": r["size"], "modified": r["updated_at"]} for r in rows]
     return {"profiles": profiles}
 
@@ -2164,6 +2278,609 @@ async def get_reminder_settings(user: dict = Depends(_auth_dependency)):
         "phone": settings.get("phone") or "",
         "reminder_time": settings.get("reminder_time") or "08:00",
         "enabled": bool(settings.get("enabled")),
+    }
+
+
+# ── Data export endpoints ─────────────────────────────────────────
+@app.get("/api/export/survey")
+async def export_survey(session_id: str):
+    """Export the survey conversation as CSV (question, answer, question_id, tag)."""
+    session_id = _validate_session_id_param(session_id)
+    sess = await _load_session(session_id)
+    if sess is None:
+        return JSONResponse({"error": "Session not found"}, status_code=404)
+
+    conversation = sess.get("conversation", [])
+    business_type = _detect_business_type(conversation)
+    active_questions = _get_questions_for_type(business_type)
+
+    # Walk the conversation: user answers alternate with assistant questions.
+    # The first assistant message (if present) is Q1; after that each user
+    # answer corresponds to the question that preceded it.
+    rows = []
+    q_idx = 0
+    current_q = active_questions[0] if active_questions else None
+    for msg in conversation:
+        if msg["role"] == "assistant":
+            # This becomes the "current question" for the next user answer
+            if q_idx < len(active_questions):
+                current_q = active_questions[q_idx]
+        elif msg["role"] == "user":
+            q_id = current_q["id"] if current_q else ""
+            q_tag = current_q["tag"] if current_q else ""
+            q_text = current_q["text"] if current_q else ""
+            rows.append({
+                "question_id": q_id,
+                "question": q_text,
+                "answer": msg["content"],
+                "tag": q_tag,
+            })
+            q_idx += 1
+            if q_idx < len(active_questions):
+                current_q = active_questions[q_idx]
+
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=["question_id", "question", "answer", "tag"])
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=survey_export.csv"},
+    )
+
+
+@app.get("/api/export/checkins")
+async def export_checkins(session_id: str):
+    """Export all daily check-ins as CSV (date, conversation, stress_points, wins, priorities, summary)."""
+    session_id = _validate_session_id_param(session_id)
+    checkins = await _get_all_checkins(session_id)
+
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=["date", "conversation", "stress_points", "wins", "priorities", "summary"],
+    )
+    writer.writeheader()
+    for checkin in checkins:
+        # Flatten conversation to a readable transcript
+        conv_text = "\n".join(
+            f"{'AI' if m['role'] == 'assistant' else 'Owner'}: {m['content']}"
+            for m in checkin.get("conversation", [])
+        )
+        writer.writerow({
+            "date": checkin.get("created_at") or "",
+            "conversation": conv_text,
+            "stress_points": "; ".join(checkin.get("stress_points") or []),
+            "wins": "; ".join(checkin.get("wins") or []),
+            "priorities": "; ".join(checkin.get("priorities") or []),
+            "summary": checkin.get("summary") or "",
+        })
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=checkins_export.csv"},
+    )
+
+
+@app.get("/api/export/profile")
+async def export_profile(session_id: str):
+    """Export the behavioral profile as a markdown file download."""
+    session_id = _validate_session_id_param(session_id)
+    profile = await _load_profile(session_id)
+    if not profile:
+        return JSONResponse({"error": "No profile found for this session."}, status_code=404)
+
+    return Response(
+        content=profile,
+        media_type="text/markdown",
+        headers={"Content-Disposition": "attachment; filename=profile.md"},
+    )
+
+
+@app.get("/api/export/all")
+async def export_all(session_id: str):
+    """Export everything (survey, check-ins, profile, business profile, card priorities) as a single JSON download."""
+    session_id = _validate_session_id_param(session_id)
+
+    # Survey conversation
+    sess = await _load_session(session_id)
+    survey_data = None
+    if sess:
+        business_type = _detect_business_type(sess.get("conversation", []))
+        active_questions = _get_questions_for_type(business_type)
+        survey_data = {
+            "session_id": sess["session_id"],
+            "conversation": sess["conversation"],
+            "q_index": sess["q_index"],
+            "probe_count": sess["probe_count"],
+            "business_type": business_type,
+            "questions": active_questions,
+        }
+
+    # All check-ins
+    checkins = await _get_all_checkins(session_id)
+
+    # Behavioral profile
+    profile = await _load_profile(session_id)
+
+    # Business profile (card config)
+    business_profile = await _load_business_profile(session_id)
+
+    # Card priorities
+    card_priorities = await _get_card_priorities(session_id)
+
+    payload = {
+        "session_id": session_id,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "survey": survey_data,
+        "checkins": checkins,
+        "profile": profile,
+        "business_profile": business_profile,
+        "card_priorities": card_priorities,
+    }
+
+    json_str = json.dumps(payload, indent=2, default=str)
+    return Response(
+        content=json_str,
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=full_export.json"},
+    )
+
+
+# ── Admin endpoints ───────────────────────────────────────────────
+# All admin endpoints require ADMIN_TOKEN env var. If not set, all
+# admin endpoints return 404 (as if they don't exist).
+# Auth: "Authorization: Bearer <ADMIN_TOKEN>" header.
+
+ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")
+
+
+def _check_admin(authorization: str | None):
+    """Validate admin token. Returns True if authorized, False otherwise."""
+    if not ADMIN_TOKEN:
+        return False
+    if not authorization or not authorization.startswith("Bearer "):
+        return False
+    token = authorization[7:]
+    return hmac.compare_digest(token, ADMIN_TOKEN)
+
+
+@app.get("/api/admin/stats")
+async def admin_stats(authorization: str | None = Header(None)):
+    """Admin stats: total users, businesses, completion rate, checkins,
+    businesses-by-type breakdown, and recent signups (last 10)."""
+    if not _check_admin(authorization):
+        raise HTTPException(status_code=404)
+
+    # Total users
+    user_rows = await _turso_query("SELECT COUNT(*) as cnt FROM users")
+    total_users = int(user_rows[0]["cnt"]) if user_rows else 0
+
+    # All sessions (for completion + business type detection)
+    sessions = await _turso_query(
+        "SELECT session_id, conversation, q_index, created_at, user_id FROM survey_sessions"
+    )
+
+    # Businesses: sessions that have a conversation (at least Q1 answered)
+    businesses = []
+    businesses_by_type: dict[str, int] = {}
+    completed = 0
+    for s in sessions:
+        conv_raw = s.get("conversation") or "[]"
+        try:
+            conv = json.loads(conv_raw)
+        except (json.JSONDecodeError, TypeError):
+            conv = []
+        if not conv:
+            continue
+        biz_type = _detect_business_type(conv)
+        active_questions = _get_questions_for_type(biz_type)
+        q_index = int(s.get("q_index") or 0)
+        is_complete = q_index >= len(active_questions)
+        if is_complete:
+            completed += 1
+        businesses_by_type[biz_type] = businesses_by_type.get(biz_type, 0) + 1
+        businesses.append({
+            "session_id": s["session_id"],
+            "business_type": biz_type,
+            "completed": is_complete,
+        })
+
+    total_businesses = len(businesses)
+    completion_rate = round(completed / total_businesses * 100, 1) if total_businesses > 0 else 0.0
+
+    # Total check-ins
+    checkin_rows = await _turso_query("SELECT COUNT(*) as cnt FROM daily_checkins")
+    total_checkins = int(checkin_rows[0]["cnt"]) if checkin_rows else 0
+
+    # Recent signups (last 10 users) with business type
+    recent_users = await _turso_query(
+        "SELECT user_id, email, created_at FROM users ORDER BY created_at DESC LIMIT 10"
+    )
+    recent_signups = []
+    for u in recent_users:
+        biz_type = "—"
+        # Find the user's survey session to detect business type
+        sess_rows = await _turso_query(
+            "SELECT conversation FROM survey_sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
+            [{"type": "text", "value": u["user_id"]}],
+        )
+        if sess_rows and sess_rows[0].get("conversation"):
+            try:
+                conv = json.loads(sess_rows[0]["conversation"])
+                biz_type = _detect_business_type(conv)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        recent_signups.append({
+            "user_id": u["user_id"],
+            "email": u.get("email", ""),
+            "created_at": u.get("created_at", ""),
+            "business_type": biz_type,
+        })
+
+    return {
+        "total_users": total_users,
+        "total_businesses": total_businesses,
+        "completion_rate": completion_rate,
+        "total_checkins": total_checkins,
+        "businesses_by_type": businesses_by_type,
+        "recent_signups": recent_signups,
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_users(authorization: str | None = Header(None)):
+    """List all users with business type if detectable."""
+    if not _check_admin(authorization):
+        raise HTTPException(status_code=404)
+
+    users = await _turso_query(
+        "SELECT user_id, email, created_at FROM users ORDER BY created_at DESC"
+    )
+    result = []
+    for u in users:
+        biz_type = None
+        sess_rows = await _turso_query(
+            "SELECT conversation FROM survey_sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
+            [{"type": "text", "value": u["user_id"]}],
+        )
+        if sess_rows and sess_rows[0].get("conversation"):
+            try:
+                conv = json.loads(sess_rows[0]["conversation"])
+                biz_type = _detect_business_type(conv)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        result.append({
+            "user_id": u["user_id"],
+            "email": u.get("email", ""),
+            "created_at": u.get("created_at", ""),
+            "business_type": biz_type,
+        })
+    return {"users": result}
+
+
+@app.get("/api/admin/businesses")
+async def admin_businesses(authorization: str | None = Header(None)):
+    """List all businesses with member counts and last check-in."""
+    if not _check_admin(authorization):
+        raise HTTPException(status_code=404)
+
+    sessions = await _turso_query(
+        "SELECT session_id, conversation, q_index, user_id FROM survey_sessions"
+    )
+    businesses = []
+    for s in sessions:
+        conv_raw = s.get("conversation") or "[]"
+        try:
+            conv = json.loads(conv_raw)
+        except (json.JSONDecodeError, TypeError):
+            conv = []
+        if not conv:
+            continue
+
+        biz_type = _detect_business_type(conv)
+        # Extract business name from the card selection / business profile
+        biz_name = "—"
+        bp = await _load_business_profile(s["session_id"])
+        if bp and bp.get("business_name"):
+            biz_name = bp["business_name"]
+
+        # Member count: number of sessions linked to the same user
+        member_count = 0
+        user_id = s.get("user_id")
+        if user_id:
+            count_rows = await _turso_query(
+                "SELECT COUNT(*) as cnt FROM survey_sessions WHERE user_id=?",
+                [{"type": "text", "value": user_id}],
+            )
+            member_count = int(count_rows[0]["cnt"]) if count_rows else 0
+
+        # Last check-in date
+        last_checkin = None
+        ci_rows = await _turso_query(
+            "SELECT created_at FROM daily_checkins WHERE session_id=? ORDER BY created_at DESC LIMIT 1",
+            [{"type": "text", "value": s["session_id"]}],
+        )
+        if ci_rows:
+            last_checkin = ci_rows[0].get("created_at")
+
+        businesses.append({
+            "session_id": s["session_id"],
+            "name": biz_name,
+            "type": biz_type,
+            "member_count": member_count,
+            "last_checkin": last_checkin,
+        })
+
+    # Sort: businesses with check-ins first, then by name
+    businesses.sort(key=lambda b: (b["last_checkin"] is None, b["name"]))
+    return {"businesses": businesses}
+
+
+@app.get("/api/admin/checkins")
+async def admin_checkins(authorization: str | None = Header(None)):
+    """Recent check-ins (last 50) with summary and stress points."""
+    if not _check_admin(authorization):
+        raise HTTPException(status_code=404)
+
+    rows = await _turso_query(
+        "SELECT id, session_id, stress_points, summary, created_at "
+        "FROM daily_checkins ORDER BY created_at DESC LIMIT 50"
+    )
+    checkins = []
+    for r in rows:
+        stress_raw = r.get("stress_points") or "[]"
+        try:
+            stress_points = json.loads(stress_raw)
+        except (json.JSONDecodeError, TypeError):
+            stress_points = []
+        checkins.append({
+            "id": r.get("id"),
+            "session_id": r.get("session_id"),
+            "summary": r.get("summary") or "",
+            "stress_points": stress_points,
+            "created_at": r.get("created_at"),
+        })
+    return {"checkins": checkins}
+
+
+# ── Multi-user business endpoints ────────────────────────────────
+class CreateBusinessRequest(BaseModel):
+    name: str
+    type: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("name must not be empty")
+        if len(v) > 200:
+            raise ValueError("name must be 200 characters or fewer")
+        return v
+
+
+class InviteMemberRequest(BaseModel):
+    email: str
+    business_id: int
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or "@" not in v or "." not in v:
+            raise ValueError("A valid email address is required")
+        if len(v) > 254:
+            raise ValueError("Email must be 254 characters or fewer")
+        return v
+
+    @field_validator("business_id")
+    @classmethod
+    def validate_business_id(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("business_id must be a positive integer")
+        return v
+
+
+class AcceptInviteRequest(BaseModel):
+    token: str
+
+    @field_validator("token")
+    @classmethod
+    def validate_token(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("token must not be empty")
+        if len(v) > 200:
+            raise ValueError("token must be 200 characters or fewer")
+        return v.strip()
+
+
+@app.post("/api/business/create")
+async def create_business(req: CreateBusinessRequest, user: dict = Depends(_auth_dependency)):
+    """Create a new business and link the current user as owner."""
+    business_id_val = "b-" + secrets.token_hex(8)
+    # Insert the business row. SQLite autoincrement INTEGER PK is used, but we
+    # store a human-readable business_id-like token is NOT needed — the PK
+    # autoincrement column serves as the business_id. We insert and then fetch
+    # the rowid.
+    await _turso_execute(
+        """INSERT INTO businesses (name, type) VALUES (?, ?)""",
+        [
+            {"type": "text", "value": req.name},
+            {"type": "text", "value": req.type},
+        ]
+    )
+    # Fetch the newly created business by name + created_at (most recent match)
+    rows = await _turso_query(
+        "SELECT business_id, name, type, created_at FROM businesses WHERE name=? ORDER BY created_at DESC LIMIT 1",
+        [{"type": "text", "value": req.name}]
+    )
+    if not rows:
+        raise HTTPException(status_code=500, detail="Failed to create business.")
+    business = rows[0]
+    business_id = business["business_id"]
+
+    # Link current user as owner in business_members
+    await _turso_execute(
+        """INSERT OR REPLACE INTO business_members (business_id, user_id, role, invited_at, joined_at)
+           VALUES (?, ?, 'owner', datetime('now'), datetime('now'))""",
+        [
+            {"type": "integer", "value": str(business_id)},
+            {"type": "text", "value": user["user_id"]},
+        ]
+    )
+
+    return {
+        "status": "ok",
+        "business": {
+            "business_id": business_id,
+            "name": business.get("name"),
+            "type": business.get("type"),
+            "created_at": business.get("created_at"),
+        },
+        "role": "owner",
+    }
+
+
+@app.post("/api/business/invite")
+async def invite_member(req: InviteMemberRequest, user: dict = Depends(_auth_dependency)):
+    """Generate an invite token for an email to join a business.
+    The inviter must be a member of the business."""
+    # Verify the current user is a member of this business
+    member_rows = await _turso_query(
+        "SELECT role FROM business_members WHERE business_id=? AND user_id=?",
+        [
+            {"type": "integer", "value": str(req.business_id)},
+            {"type": "text", "value": user["user_id"]},
+        ]
+    )
+    if not member_rows:
+        raise HTTPException(status_code=403, detail="You are not a member of this business.")
+
+    # Verify business exists
+    biz_rows = await _turso_query(
+        "SELECT business_id, name FROM businesses WHERE business_id=?",
+        [{"type": "integer", "value": str(req.business_id)}]
+    )
+    if not biz_rows:
+        raise HTTPException(status_code=404, detail="Business not found.")
+
+    token = secrets.token_urlsafe(32)
+    await _turso_execute(
+        """INSERT INTO business_invites (token, business_id, email, created_at)
+           VALUES (?, ?, ?, datetime('now'))""",
+        [
+            {"type": "text", "value": token},
+            {"type": "integer", "value": str(req.business_id)},
+            {"type": "text", "value": req.email},
+        ]
+    )
+
+    # Build an invite link (frontend route). The base is derived from CORS origins.
+    invite_link = f"/business/invite?token={token}"
+
+    return {
+        "status": "ok",
+        "token": token,
+        "invite_link": invite_link,
+        "email": req.email,
+        "business_id": req.business_id,
+        "business_name": biz_rows[0].get("name"),
+    }
+
+
+@app.post("/api/business/accept-invite")
+async def accept_invite(req: AcceptInviteRequest, user: dict = Depends(_auth_dependency)):
+    """Accept a business invite by token. Adds the current user to business_members."""
+    rows = await _turso_query(
+        "SELECT token, business_id, email, created_at, accepted_at FROM business_invites WHERE token=?",
+        [{"type": "text", "value": req.token}]
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="Invalid or expired invite token.")
+
+    invite = rows[0]
+    if invite.get("accepted_at"):
+        raise HTTPException(status_code=409, detail="This invite has already been accepted.")
+
+    business_id = invite["business_id"]
+
+    # Verify business still exists
+    biz_rows = await _turso_query(
+        "SELECT business_id, name FROM businesses WHERE business_id=?",
+        [{"type": "integer", "value": str(business_id)}]
+    )
+    if not biz_rows:
+        raise HTTPException(status_code=404, detail="Business no longer exists.")
+
+    # Add user to business_members as a regular member
+    await _turso_execute(
+        """INSERT OR REPLACE INTO business_members (business_id, user_id, role, invited_at, joined_at)
+           VALUES (?, ?, 'member', ?, datetime('now'))""",
+        [
+            {"type": "integer", "value": str(business_id)},
+            {"type": "text", "value": user["user_id"]},
+            {"type": "text", "value": invite.get("created_at") or ""},
+        ]
+    )
+
+    # Mark invite as accepted
+    await _turso_execute(
+        "UPDATE business_invites SET accepted_at=datetime('now') WHERE token=?",
+        [{"type": "text", "value": req.token}]
+    )
+
+    return {
+        "status": "ok",
+        "business_id": business_id,
+        "business_name": biz_rows[0].get("name"),
+        "role": "member",
+    }
+
+
+@app.get("/api/business/members")
+async def list_business_members(user: dict = Depends(_auth_dependency)):
+    """List members of the current user's business."""
+    business_id = await _get_user_business_id(user["user_id"])
+    if business_id is None:
+        return JSONResponse(
+            {"members": [], "message": "You are not part of any business."},
+            status_code=200,
+        )
+
+    rows = await _turso_query(
+        """SELECT bm.business_id, bm.user_id, bm.role, bm.invited_at, bm.joined_at, u.email
+           FROM business_members bm
+           LEFT JOIN users u ON bm.user_id = u.user_id
+           WHERE bm.business_id=?
+           ORDER BY bm.joined_at ASC""",
+        [{"type": "integer", "value": str(business_id)}]
+    )
+    members = []
+    for r in rows:
+        members.append({
+            "user_id": r.get("user_id"),
+            "email": r.get("email"),
+            "role": r.get("role"),
+            "invited_at": r.get("invited_at"),
+            "joined_at": r.get("joined_at"),
+        })
+
+    # Include business info
+    biz_rows = await _turso_query(
+        "SELECT business_id, name, type, created_at FROM businesses WHERE business_id=?",
+        [{"type": "integer", "value": str(business_id)}]
+    )
+    business = biz_rows[0] if biz_rows else {}
+
+    return {
+        "business_id": business_id,
+        "business": business,
+        "members": members,
     }
 
 

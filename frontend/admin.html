@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta name="theme-color" content="#0a0a0a">
+<title>Daily 15 — Admin Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0a;
+  --surface:#141414;
+  --surface-hover:#1a1a1a;
+  --border:#222;
+  --border-strong:#333;
+  --text:#e8e8e8;
+  --text-secondary:#999;
+  --text-muted:#666;
+  --accent:#d6364e;
+  --accent-soft:rgba(214,54,78,0.1);
+  --ok:#4ade80;
+  --warn:#fbbf24;
+  --critical:#f87171;
+  --radius:14px;
+  --radius-sm:8px;
+  --radius-pill:9999px;
+  --font-display:'Instrument Serif',serif;
+  --font-sans:'Inter',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',monospace;
+}
+html,body{height:100%}
+body{
+  font-family:var(--font-sans);
+  background:var(--bg);
+  color:var(--text);
+  -webkit-font-smoothing:antialiased;
+  font-size:14px;line-height:1.6;
+}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,0.18)}
+
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+#app{
+  max-width:1200px;margin:0 auto;min-height:100vh;
+  padding:24px 20px 48px;
+}
+
+/* ── Login screen ── */
+.login-screen{
+  display:flex;align-items:center;justify-content:center;
+  min-height:80vh;flex-direction:column;gap:24px;
+}
+.login-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:40px 32px;
+  width:100%;max-width:400px;
+}
+.login-title{
+  font-family:var(--font-display);font-size:24px;
+  margin-bottom:4px;
+}
+.login-sub{
+  font-size:13px;color:var(--text-muted);margin-bottom:24px;
+}
+.input-group{margin-bottom:16px}
+.input-group label{
+  display:block;font-size:12px;font-weight:500;
+  color:var(--text-secondary);margin-bottom:6px;
+}
+.input-group input{
+  width:100%;padding:12px 14px;
+  background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--radius-sm);color:var(--text);
+  font-family:var(--font-mono);font-size:13px;
+  transition:border-color .2s;
+}
+.input-group input:focus{
+  outline:none;border-color:var(--accent);
+}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:12px 20px;border-radius:var(--radius-sm);
+  font-family:var(--font-sans);font-weight:600;font-size:14px;
+  cursor:pointer;border:none;transition:all .2s;
+}
+.btn-primary{
+  background:var(--accent);color:#fff;
+}
+.btn-primary:hover{background:#ff3344}
+.btn-ghost{
+  background:transparent;color:var(--text-secondary);
+  border:1px solid var(--border);
+}
+.btn-ghost:hover{border-color:var(--border-strong);color:var(--text)}
+.login-error{
+  color:var(--critical);font-size:13px;margin-top:12px;
+  display:none;
+}
+.login-error.show{display:block}
+
+/* ── Dashboard ── */
+.dashboard{display:none}
+.dashboard.show{display:block;animation:fadeIn .3s ease}
+
+/* Header */
+.header{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:28px;gap:16px;
+}
+.header-brand{display:flex;align-items:center;gap:12px}
+.brand-mark{
+  width:40px;height:40px;border-radius:12px;
+  background:var(--text);color:var(--bg);
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-display);font-size:20px;font-style:italic;
+}
+.header-title{font-family:var(--font-display);font-size:24px;letter-spacing:-0.3px}
+.header-sub{
+  font-size:12px;color:var(--text-muted);
+  font-family:var(--font-mono);letter-spacing:0.05em;
+}
+.logout-btn{
+  font-size:13px;color:var(--text-muted);
+  padding:8px 16px;border-radius:var(--radius-pill);
+  border:1px solid var(--border);
+  transition:all .2s;cursor:pointer;
+}
+.logout-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+/* Stat cards */
+.stats-grid{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+  gap:16px;margin-bottom:32px;
+}
+.stat-card{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);padding:20px;
+  animation:fadeIn .3s ease;
+}
+.stat-label{
+  font-size:11px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.08em;color:var(--text-muted);
+  font-family:var(--font-mono);margin-bottom:8px;
+}
+.stat-value{
+  font-size:32px;font-weight:700;font-family:var(--font-display);
+  letter-spacing:-0.5px;
+}
+.stat-detail{
+  font-size:12px;color:var(--text-muted);margin-top:4px;
+}
+
+/* Section */
+.section{margin-bottom:32px}
+.section-title{
+  font-size:16px;font-weight:600;margin-bottom:14px;
+  display:flex;align-items:center;gap:10px;
+}
+.section-count{
+  font-size:11px;font-weight:600;
+  background:var(--surface);border:1px solid var(--border);
+  padding:2px 8px;border-radius:var(--radius-pill);
+  color:var(--text-muted);font-family:var(--font-mono);
+}
+
+/* Tables */
+.table-wrap{
+  background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--radius);overflow:hidden;
+}
+table{width:100%;border-collapse:collapse}
+thead{background:var(--surface-hover)}
+th{
+  text-align:left;padding:12px 16px;
+  font-size:11px;font-weight:600;text-transform:uppercase;
+  letter-spacing:0.06em;color:var(--text-muted);
+  font-family:var(--font-mono);
+  border-bottom:1px solid var(--border);
+}
+td{
+  padding:12px 16px;font-size:13px;
+  border-bottom:1px solid var(--border);
+}
+tbody tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--surface-hover)}
+.mono{font-family:var(--font-mono);font-size:12px}
+.muted{color:var(--text-muted)}
+
+/* Tags/pills */
+.tag{
+  display:inline-block;padding:3px 8px;
+  border-radius:var(--radius-pill);
+  font-size:11px;font-weight:500;
+  background:var(--accent-soft);color:var(--accent);
+}
+
+/* Charts */
+.chart-row{
+  display:flex;align-items:center;gap:12px;
+  padding:8px 16px;border-bottom:1px solid var(--border);
+}
+.chart-row:last-child{border-bottom:none}
+.chart-label{
+  flex:0 0 160px;font-size:13px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.chart-bar-container{
+  flex:1;height:24px;background:var(--bg);
+  border-radius:var(--radius-sm);overflow:hidden;
+  position:relative;
+}
+.chart-bar{
+  height:100%;border-radius:var(--radius-sm);
+  background:linear-gradient(90deg,var(--accent),rgba(214,54,78,0.5));
+  transition:width .5s ease;
+  min-width:2px;
+}
+.chart-value{
+  flex:0 0 50px;text-align:right;
+  font-family:var(--font-mono);font-size:12px;
+  color:var(--text-secondary);
+}
+
+/* Loading */
+.loading{text-align:center;padding:40px;color:var(--text-muted)}
+
+/* Empty state */
+.empty-state{
+  text-align:center;padding:32px;color:var(--text-muted);
+  font-size:14px;
+}
+
+/* Responsive */
+@media(max-width:640px){
+  .stats-grid{grid-template-columns:1fr 1fr}
+  .chart-label{flex:0 0 100px;font-size:12px}
+  th,td{padding:10px 12px;font-size:12px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Login Screen -->
+  <div class="login-screen" id="loginScreen">
+    <div class="login-card">
+      <div class="login-title">Admin Dashboard</div>
+      <div class="login-sub">Enter your admin token to continue</div>
+      <div class="input-group">
+        <label for="adminToken">Admin Token</label>
+        <input type="password" id="adminToken" placeholder="Enter admin token" autocomplete="off">
+      </div>
+      <button class="btn btn-primary" style="width:100%" id="loginBtn">Access Dashboard</button>
+      <div class="login-error" id="loginError">Invalid token or admin endpoints not available.</div>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="dashboard" id="dashboard">
+
+    <!-- Header -->
+    <div class="header">
+      <div class="header-brand">
+        <div class="brand-mark">D15</div>
+        <div>
+          <div class="header-title">Admin Dashboard</div>
+          <div class="header-sub" id="lastUpdated">—</div>
+        </div>
+      </div>
+      <button class="logout-btn" id="logoutBtn">Logout</button>
+    </div>
+
+    <!-- Stats Cards -->
+    <div class="stats-grid" id="statsGrid">
+      <div class="stat-card">
+        <div class="stat-label">Total Users</div>
+        <div class="stat-value" id="statUsers">—</div>
+        <div class="stat-detail" id="statUsersDetail"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Businesses</div>
+        <div class="stat-value" id="statBusinesses">—</div>
+        <div class="stat-detail" id="statBusinessesDetail"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Completion Rate</div>
+        <div class="stat-value" id="statCompletion">—</div>
+        <div class="stat-detail" id="statCompletionDetail"></div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Total Check-ins</div>
+        <div class="stat-value" id="statCheckins">—</div>
+        <div class="stat-detail" id="statCheckinsDetail"></div>
+      </div>
+    </div>
+
+    <!-- Businesses by Type Chart -->
+    <div class="section">
+      <div class="section-title">Businesses by Type</div>
+      <div class="table-wrap" id="businessTypeChart">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Recent Signups -->
+    <div class="section">
+      <div class="section-title">Recent Signups <span class="section-count" id="signupsCount">0</span></div>
+      <div class="table-wrap" id="signupsTable">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Users Table -->
+    <div class="section">
+      <div class="section-title">All Users <span class="section-count" id="usersCount">0</span></div>
+      <div class="table-wrap" id="usersTable">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Businesses Table -->
+    <div class="section">
+      <div class="section-title">Businesses <span class="section-count" id="businessesCount">0</span></div>
+      <div class="table-wrap" id="businessesTable">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Recent Check-ins Table -->
+    <div class="section">
+      <div class="section-title">Recent Check-ins <span class="section-count" id="checkinsCount">0</span></div>
+      <div class="table-wrap" id="checkinsTable">
+        <div class="loading">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function(){
+  const API_BASE = window.location.origin;
+  let adminToken = sessionStorage.getItem('adminToken') || '';
+
+  // ── DOM refs ──
+  const loginScreen = document.getElementById('loginScreen');
+  const dashboard = document.getElementById('dashboard');
+  const loginBtn = document.getElementById('loginBtn');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const adminTokenInput = document.getElementById('adminToken');
+  const loginError = document.getElementById('loginError');
+
+  // ── API helper ──
+  async function apiCall(endpoint){
+    const resp = await fetch(API_BASE + endpoint, {
+      headers: { 'Authorization': 'Bearer ' + adminToken }
+    });
+    if(resp.status === 401){
+      throw new Error('Unauthorized');
+    }
+    if(resp.status === 404){
+      throw new Error('NotFound');
+    }
+    if(!resp.ok){
+      throw new Error('HTTP ' + resp.status);
+    }
+    return resp.json();
+  }
+
+  // ── Login ──
+  async function tryLogin(token){
+    adminToken = token;
+    try{
+      // Test by fetching stats
+      const resp = await fetch(API_BASE + '/api/admin/stats', {
+        headers: { 'Authorization': 'Bearer ' + adminToken }
+      });
+      if(resp.ok){
+        sessionStorage.setItem('adminToken', adminToken);
+        loginScreen.style.display = 'none';
+        dashboard.classList.add('show');
+        await loadDashboard();
+      } else if(resp.status === 404){
+        loginError.textContent = 'Admin endpoints not available (ADMIN_TOKEN not set on server).';
+        loginError.classList.add('show');
+      } else {
+        loginError.textContent = 'Invalid admin token.';
+        loginError.classList.add('show');
+      }
+    } catch(e){
+      loginError.textContent = 'Connection error: ' + e.message;
+      loginError.classList.add('show');
+    }
+  }
+
+  loginBtn.addEventListener('click', function(){
+    const token = adminTokenInput.value.trim();
+    if(!token){
+      loginError.textContent = 'Please enter a token.';
+      loginError.classList.add('show');
+      return;
+    }
+    loginError.classList.remove('show');
+    tryLogin(token);
+  });
+
+  adminTokenInput.addEventListener('keydown', function(e){
+    if(e.key === 'Enter') loginBtn.click();
+  });
+
+  logoutBtn.addEventListener('click', function(){
+    sessionStorage.removeItem('adminToken');
+    adminToken = '';
+    dashboard.classList.remove('show');
+    loginScreen.style.display = 'flex';
+    adminTokenInput.value = '';
+  });
+
+  // ── Esc helper ──
+  function esc(s){
+    if(s == null) return '';
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+
+  // ── Date formatting ──
+  function fmtDate(s){
+    if(!s) return '—';
+    try{
+      const d = new Date(s + (s.endsWith('Z') ? '' : 'Z'));
+      if(isNaN(d.getTime())) return s;
+      return d.toLocaleDateString('en-US', {month:'short',day:'numeric',year:'numeric'});
+    } catch(e){ return s; }
+  }
+  function fmtDateTime(s){
+    if(!s) return '—';
+    try{
+      const d = new Date(s + (s.endsWith('Z') ? '' : 'Z'));
+      if(isNaN(d.getTime())) return s;
+      return d.toLocaleString('en-US', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    } catch(e){ return s; }
+  }
+
+  // ── Render stats ──
+  function renderStats(data){
+    document.getElementById('statUsers').textContent = data.total_users ?? '0';
+    document.getElementById('statUsersDetail').textContent =
+      data.recent_signups ? data.recent_signups.length + ' recent signups' : '';
+
+    const bizByType = data.businesses_by_type || {};
+    const bizCount = Object.values(bizByType).reduce((a,b) => a + (Number(b)||0), 0);
+    document.getElementById('statBusinesses').textContent = data.total_businesses ?? bizCount;
+    document.getElementById('statBusinessesDetail').textContent =
+      Object.keys(bizByType).length + ' business types';
+
+    const cr = data.completion_rate;
+    document.getElementById('statCompletion').textContent =
+      cr != null ? (Math.round(cr * 10) / 10) + '%' : '—';
+    document.getElementById('statCompletionDetail').textContent =
+      data.total_businesses > 0 ? 'of onboarded sessions' : '';
+
+    document.getElementById('statCheckins').textContent = data.total_checkins ?? '0';
+    document.getElementById('statCheckinsDetail').textContent = 'total check-in records';
+
+    document.getElementById('lastUpdated').textContent =
+      'Updated ' + new Date().toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit'});
+
+    // Business type bar chart
+    renderBizTypeChart(bizByType);
+
+    // Recent signups
+    renderSignups(data.recent_signups || []);
+  }
+
+  // ── Render business type chart ──
+  function renderBizTypeChart(bizByType){
+    const container = document.getElementById('businessTypeChart');
+    const entries = Object.entries(bizByType);
+    if(entries.length === 0){
+      container.innerHTML = '<div class="empty-state">No business type data yet.</div>';
+      return;
+    }
+    entries.sort((a,b) => (Number(b[1])||0) - (Number(a[1])||0));
+    const maxVal = Math.max(...entries.map(e => Number(e[1])||0), 1);
+
+    let html = '';
+    for(const [type, count] of entries){
+      const pct = ((Number(count)||0) / maxVal) * 100;
+      html += '<div class="chart-row">' +
+        '<div class="chart-label" title="' + esc(type) + '">' + esc(type) + '</div>' +
+        '<div class="chart-bar-container">' +
+          '<div class="chart-bar" style="width:' + pct + '%"></div>' +
+        '</div>' +
+        '<div class="chart-value">' + esc(count) + '</div>' +
+      '</div>';
+    }
+    container.innerHTML = html;
+  }
+
+  // ── Render recent signups ──
+  function renderSignups(signups){
+    const container = document.getElementById('signupsTable');
+    document.getElementById('signupsCount').textContent = signups.length;
+    if(signups.length === 0){
+      container.innerHTML = '<div class="empty-state">No recent signups.</div>';
+      return;
+    }
+    let html = '<table><thead><tr>' +
+      '<th>Email</th><th>Joined</th><th>Business Type</th>' +
+      '</tr></thead><tbody>';
+    for(const u of signups){
+      html += '<tr>' +
+        '<td>' + esc(u.email) + '</td>' +
+        '<td class="mono">' + esc(fmtDate(u.created_at)) + '</td>' +
+        '<td>' + (u.business_type ? '<span class="tag">' + esc(u.business_type) + '</span>' : '<span class="muted">—</span>') + '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  // ── Render users table ──
+  function renderUsers(users){
+    const container = document.getElementById('usersTable');
+    document.getElementById('usersCount').textContent = users.length;
+    if(users.length === 0){
+      container.innerHTML = '<div class="empty-state">No users yet.</div>';
+      return;
+    }
+    let html = '<table><thead><tr>' +
+      '<th>Email</th><th>Joined Date</th><th>Business Type</th>' +
+      '</tr></thead><tbody>';
+    for(const u of users){
+      html += '<tr>' +
+        '<td>' + esc(u.email) + '</td>' +
+        '<td class="mono">' + esc(fmtDate(u.created_at)) + '</td>' +
+        '<td>' + (u.business_type ? '<span class="tag">' + esc(u.business_type) + '</span>' : '<span class="muted">—</span>') + '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  // ── Render businesses table ──
+  function renderBusinesses(businesses){
+    const container = document.getElementById('businessesTable');
+    document.getElementById('businessesCount').textContent = businesses.length;
+    if(businesses.length === 0){
+      container.innerHTML = '<div class="empty-state">No businesses yet.</div>';
+      return;
+    }
+    let html = '<table><thead><tr>' +
+      '<th>Business Name</th><th>Type</th><th>Members</th><th>Last Check-in</th>' +
+      '</tr></thead><tbody>';
+    for(const b of businesses){
+      html += '<tr>' +
+        '<td>' + esc(b.name || b.business_name || '—') + '</td>' +
+        '<td>' + (b.type || b.business_type ? '<span class="tag">' + esc(b.type || b.business_type) + '</span>' : '<span class="muted">—</span>') + '</td>' +
+        '<td class="mono">' + esc(b.member_count ?? '0') + '</td>' +
+        '<td class="mono">' + esc(fmtDate(b.last_checkin)) + '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  // ── Render check-ins table ──
+  function renderCheckins(checkins){
+    const container = document.getElementById('checkinsTable');
+    document.getElementById('checkinsCount').textContent = checkins.length;
+    if(checkins.length === 0){
+      container.innerHTML = '<div class="empty-state">No check-ins yet.</div>';
+      return;
+    }
+    let html = '<table><thead><tr>' +
+      '<th>Date</th><th>Summary</th><th>Stress Points</th>' +
+      '</tr></thead><tbody>';
+    for(const c of checkins){
+      const stress = Array.isArray(c.stress_points) ? c.stress_points : [];
+      html += '<tr>' +
+        '<td class="mono" style="white-space:nowrap">' + esc(fmtDateTime(c.created_at)) + '</td>' +
+        '<td>' + esc(c.summary || '—') + '</td>' +
+        '<td>' + (stress.length > 0
+          ? stress.map(s => '<span class="tag" style="background:rgba(248,113,113,0.1);color:var(--critical)">' + esc(s) + '</span> ').join('')
+          : '<span class="muted">—</span>') + '</td>' +
+      '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  // ── Load all dashboard data ──
+  async function loadDashboard(){
+    // Load stats first
+    try{
+      const stats = await apiCall('/api/admin/stats');
+      renderStats(stats);
+    } catch(e){
+      if(e.message === 'Unauthorized'){
+        logoutBtn.click();
+        return;
+      }
+      if(e.message === 'NotFound'){
+        document.getElementById('statsGrid').innerHTML =
+          '<div class="empty-state">Admin endpoints not available. Set ADMIN_TOKEN env var on the server.</div>';
+      }
+    }
+
+    // Load users, businesses, checkins in parallel
+    const [usersP, businessesP, checkinsP] = await Promise.allSettled([
+      apiCall('/api/admin/users'),
+      apiCall('/api/admin/businesses'),
+      apiCall('/api/admin/checkins'),
+    ]);
+
+    if(usersP.status === 'fulfilled') renderUsers(usersP.value.users || []);
+    else document.getElementById('usersTable').innerHTML = '<div class="empty-state">Failed to load users.</div>';
+
+    if(businessesP.status === 'fulfilled') renderBusinesses(businessesP.value.businesses || []);
+    else document.getElementById('businessesTable').innerHTML = '<div class="empty-state">Failed to load businesses.</div>';
+
+    if(checkinsP.status === 'fulfilled') renderCheckins(checkinsP.value.checkins || []);
+    else document.getElementById('checkinsTable').innerHTML = '<div class="empty-state">Failed to load check-ins.</div>';
+  }
+
+  // ── Auto-login if token in session ──
+  if(adminToken){
+    tryLogin(adminToken);
+  }
+})();
+</script>
+</body>
+</html>
