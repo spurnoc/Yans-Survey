@@ -713,7 +713,19 @@ _PUBLIC_PATHS = {
     "/api/health",
     "/api/auth/register",
     "/api/auth/login",
+    "/api/auth/me",
     "/api/survey/questions",
+    "/api/survey/state",
+    "/api/survey/transcript",
+    "/api/survey/checkin/status",
+    "/api/survey/profile",
+    "/api/survey/business-profile",
+    "/api/survey/priorities",
+    "/api/reminder/settings",
+    "/api/export/survey",
+    "/api/export/checkins",
+    "/api/export/profile",
+    "/api/export/all",
 }
 
 
