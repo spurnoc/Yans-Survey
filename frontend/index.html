@@ -750,7 +750,9 @@ async function loadTranslations(lang) {
   try {
     const resp = await fetch(`/api/i18n/${lang}`);
     if (resp.ok) {
-      translations = await resp.json();
+      const data = await resp.json();
+      // API returns {language, translations: {...}} — extract the translations dict
+      translations = data.translations || data;
     } else {
       translations = FALLBACK_TRANSLATIONS[lang] || FALLBACK_TRANSLATIONS.en;
     }
