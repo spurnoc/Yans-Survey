@@ -88,7 +88,8 @@ async def _spur_chat_completion(messages, model, temperature=0.6, max_tokens=100
                 },
             )
             return resp
-        except Exception:
+        except Exception as e:
+            logger.debug("LLM request failed, closing client: %s", e)
             await client.aclose()
             raise
     else:

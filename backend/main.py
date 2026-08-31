@@ -548,7 +548,8 @@ def _verify_token(token: str) -> dict | None:
         payload_b64 += "=" * padding
     try:
         msg = base64.urlsafe_b64decode(payload_b64).decode()
-    except Exception:
+    except Exception as e:
+        logger.debug("Token decode failed: %s", e)
         return None
     expected_sig = hmac.new(AUTH_SECRET.encode(), msg.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected_sig):
