@@ -31,6 +31,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 import pathlib
 
+# ── Module imports for connection pooling ────────────────────────
+try:
+    from db import _get_client as _get_db_client
+    from llm import _get_client as _get_llm_client
+    _use_pooled_clients = True
+except ImportError:
+    _use_pooled_clients = False
+
 @asynccontextmanager
 async def lifespan(app):
     """Application lifespan: initialize the database on startup."""
@@ -244,7 +252,8 @@ async def _turso_request(sql: str, args: list = None) -> dict:
         # Ensure all values are strings
         stmt["args"] = [{"type": a.get("type", "text"), "value": str(a["value"])} for a in args]
     body = {"requests": [{"type": "execute", "stmt": stmt}]}
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    if _use_pooled_clients:
+        client = _get_db_client()
         resp = await client.post(
             _turso_url(),
             json=body,
@@ -253,6 +262,16 @@ async def _turso_request(sql: str, args: list = None) -> dict:
                 "Content-Type": "application/json",
             },
         )
+    else:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                _turso_url(),
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {TURSO_AUTH_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+            )
     if resp.status_code != 200:
         raise Exception(f"Turso API error: {resp.status_code} {resp.text[:300]}")
     return resp.json()
@@ -812,7 +831,8 @@ def _extract_json_from_llm(content: str) -> dict | None:
 
 async def _spur_chat_completion(messages, model, temperature=0.6, max_tokens=1000, stream=False, timeout=30.0) -> httpx.Response:
     """Send a chat completion request to the SPUR API. Returns the httpx.Response."""
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    if _use_pooled_clients:
+        client = _get_llm_client()
         resp = await client.post(
             f"{SPUR_API_BASE}/chat/completions",
             json={
@@ -826,7 +846,24 @@ async def _spur_chat_completion(messages, model, temperature=0.6, max_tokens=100
                 "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
                 "Content-Type": "application/json",
             },
+            timeout=timeout,
         )
+    else:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(
+                f"{SPUR_API_BASE}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": stream,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+                headers={
+                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
     return resp
 
 
@@ -1009,8 +1046,9 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
         return
 
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as client:
-            async with client.stream(
+        if _use_pooled_clients:
+            client = _get_llm_client()
+            _ctx = client.stream(
                 "POST",
                 f"{SPUR_API_BASE}/chat/completions",
                 json={
@@ -1024,7 +1062,27 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
                     "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
                     "Content-Type": "application/json",
                 },
-            ) as resp:
+                timeout=httpx.Timeout(90.0),
+            )
+        else:
+            client = httpx.AsyncClient(timeout=httpx.Timeout(90.0))
+            await client.__aenter__()
+            _ctx = client.stream(
+                "POST",
+                f"{SPUR_API_BASE}/chat/completions",
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": 0.6,
+                    "max_tokens": max_tokens,
+                },
+                headers={
+                    "Authorization": f"Bearer {SPUR_DEMO_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+            )
+        async with _ctx as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
                     yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
