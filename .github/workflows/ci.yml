@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (syntax check)
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11.16-slim
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-lint-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            pip-lint-${{ runner.os }}-
+
+      - name: Compile-check all Python files
+        run: |
+          set -e
+          # Find every .py file and byte-compile it; py_compile exits non-zero on syntax errors
+          python -m compileall -q backend/
+          python -m py_compile backend/*.py
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11.16-slim
+    env:
+      # Mock mode — no real DB or API calls
+      TURSO_DB_URL: ''
+      SPUR_DEMO_API_KEY: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache pip downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-test-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            pip-test-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r requirements-test.txt
+
+      - name: Run tests
+        run: |
+          pytest -v
+
+  docker-build:
+    name: Docker Build (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: spur-survey:ci-${{ github.sha }}
+
+      - name: Verify image was built
+        run: docker images spur-survey:ci-${{ github.sha }}
