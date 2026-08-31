@@ -472,6 +472,75 @@ textarea{resize:none}
   cursor:pointer;line-height:1;transition:color .2s;
 }
 .settings-close:hover{color:var(--warm-dark)}
+
+/* ── Voice input / mic button ──────────────────────────── */
+.mic-btn{
+  width:46px;height:46px;
+  border-radius:var(--radius);
+  background:var(--cream-light);
+  border:1px solid var(--warm-border);
+  color:var(--warm-muted);
+  display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;font-size:18px;
+  transition:all .2s;
+}
+.mic-btn:hover{
+  border-color:var(--accent);
+  color:var(--warm-dark);
+}
+.mic-btn.recording{
+  background:var(--accent);
+  border-color:var(--accent);
+  color:#fff;
+  animation:micPulse 1.5s infinite;
+}
+@keyframes micPulse{
+  0%,100%{box-shadow:0 0 0 0 rgba(214,54,78,0.4)}
+  50%{box-shadow:0 0 0 8px rgba(214,54,78,0)}
+}
+.recording-indicator{
+  display:none;align-items:center;gap:6px;
+  font-size:12px;color:var(--accent);font-weight:500;
+  padding:4px 0 8px;
+}
+.recording-indicator.show{display:flex}
+.recording-dot{
+  width:8px;height:8px;border-radius:50%;
+  background:var(--accent);
+  animation:recDotPulse 1s infinite;
+}
+@keyframes recDotPulse{
+  0%,100%{opacity:1;transform:scale(1)}
+  50%{opacity:0.3;transform:scale(0.7)}
+}
+
+/* ── Language selector ──────────────────────────────────── */
+.lang-select-row{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-bottom:14px;
+  padding:10px 12px;
+  background:var(--cream-bg);
+  border:1px solid var(--warm-border);
+  border-radius:var(--radius);
+}
+.lang-select-label{
+  font-size:13px;font-weight:500;
+}
+.lang-select{
+  padding:6px 12px;
+  background:var(--cream-light);
+  border:1px solid var(--warm-border);
+  border-radius:var(--radius);
+  font-size:13px;color:var(--warm-dark);
+  font-family:inherit;
+  cursor:pointer;
+}
+
+/* ── Branding logo ─────────────────────────────────────── */
+.brand-logo{
+  width:32px;height:32px;border-radius:8px;
+  object-fit:cover;
+}
 </style>
 </head>
 <body>
@@ -531,8 +600,15 @@ textarea{resize:none}
 <div class="settings-modal" id="settings-modal">
   <div class="settings-card">
     <span class="settings-close" onclick="closeSettingsModal()" role="button" aria-label="Close settings">×</span>
-    <h3 style="font-family:'Instrument Serif',serif;font-size:20px;margin-bottom:4px">Daily Reminders</h3>
-    <p style="font-size:12px;color:var(--warm-muted);margin-bottom:18px">Get a daily email reminder to check in.</p>
+    <h3 style="font-family:'Instrument Serif',serif;font-size:20px;margin-bottom:4px">Settings</h3>
+    <p style="font-size:12px;color:var(--warm-muted);margin-bottom:18px">Language and daily reminders.</p>
+    <div class="lang-select-row">
+      <span class="lang-select-label">Language</span>
+      <select class="lang-select" id="lang-select" onchange="changeLanguage(this.value)">
+        <option value="en">English</option>
+        <option value="fr">Français</option>
+      </select>
+    </div>
     <div class="reminder-fields">
       <div class="reminder-field-row">
         <input type="email" id="settings-reminder-email" placeholder="you@example.com" autocomplete="email">
@@ -541,7 +617,7 @@ textarea{resize:none}
         <input type="time" id="settings-reminder-time" class="reminder-time-input" value="08:00">
       </div>
       <div class="reminder-toggle-row">
-        <span class="reminder-toggle-label">Reminders enabled</span>
+        <span class="reminder-toggle-label" id="settings-toggle-label">Reminders enabled</span>
         <div class="toggle-switch" id="settings-reminder-toggle" onclick="toggleReminderSwitch()" role="switch" aria-checked="false" tabindex="0"></div>
       </div>
     </div>
@@ -560,6 +636,345 @@ let currentChoices = null;
 let pendingChoices = null;
 let currentMode = 'onboarding'; // 'onboarding' or 'checkin'
 let authMode = 'login'; // 'login' or 'register'
+
+// ── i18n (multi-language) ─────────────────────────────────────
+let translations = {};
+let currentLang = localStorage.getItem('survey_lang') || (navigator.language || 'en').split('-')[0];
+if (currentLang !== 'en' && currentLang !== 'fr') currentLang = 'en';
+
+// Fallback translations (used if /api/i18n fetch fails)
+const FALLBACK_TRANSLATIONS = {
+  en: {
+    survey_greeting: 'Hey — quick survey about how you run your business day to day. No wrong answers, just want to understand your world. First: ',
+    survey_greeting_q: 'what kind of business do you run?',
+    checkin_greeting_return: 'Welcome back. You checked in on',
+    checkin_greeting_new: 'Welcome back. Ready for a quick 2-minute check-in?',
+    checkin_prompt: "What's on your plate today?",
+    type_answer: 'Type your answer...',
+    send: '→',
+    listening: 'Listening...',
+    question_of: 'Question {n} of {total}',
+    complete: 'Complete',
+    onboarding: 'Onboarding',
+    daily_checkin: 'Daily Check-in',
+    complete_title: "That's everything",
+    complete_desc: "Your dashboard has been updated with a real picture of where you're at. Here's what your Daily 15 could look like.",
+    complete_link: 'See your Daily 15 →',
+    checkin_complete_title: 'Check-in done',
+    checkin_complete_desc: "Your dashboard has been updated with today's priorities. See you tomorrow.",
+    checkin_complete_link: 'Go to dashboard →',
+    thinking: 'Thinking...',
+    connection_error: 'Connection error. Try again.',
+    something_wrong: 'Something went wrong. Try again.',
+    type_own_answer: 'Type my own answer...',
+    start_over: 'Start over? This clears the conversation.',
+    reset_failed: 'Reset failed. Please try again.',
+    welcome_back: 'Welcome back',
+    log_in_to_continue: 'Log in to continue your survey',
+    log_in: 'Log In',
+    register: 'Register',
+    create_account: 'Create account',
+    register_to_start: 'Register to start your survey',
+    logging_in: 'Logging in…',
+    registering: 'Registering…',
+    enter_email_password: 'Please enter your email and password.',
+    something_wrong_generic: 'Something went wrong. Try again.',
+    conn_error_auth: 'Connection error. Try again.',
+    settings: 'Settings',
+    settings_desc: 'Language and daily reminders.',
+    language: 'Language',
+    reminders_enabled: 'Reminders enabled',
+    save_settings: 'Save Settings',
+    view_transcript: 'View full transcript',
+    conversation: 'Conversation',
+  },
+  fr: {
+    survey_greeting: 'Hé — un petit sondage sur la façon dont vous gérez votre entreprise au quotidien. Pas de mauvaises réponses, je veux juste comprendre votre univers. D\'abord: ',
+    survey_greeting_q: 'quel genre d\'entreprise gérez-vous?',
+    checkin_greeting_return: 'Bon retour. Vous avez pointé le',
+    checkin_greeting_new: 'Bon retour. Prêt pour un petit check-in de 2 minutes?',
+    checkin_prompt: "Qu'est-ce qui vous attend aujourd'hui?",
+    type_answer: 'Tapez votre réponse...',
+    send: '→',
+    listening: 'Écoute...',
+    question_of: 'Question {n} sur {total}',
+    complete: 'Terminé',
+    onboarding: 'Accueil',
+    daily_checkin: 'Check-in quotidien',
+    complete_title: 'C\'est tout',
+    complete_desc: 'Votre tableau de bord a été mis à jour. Voici à quoi votre Daily 15 pourrait ressembler.',
+    complete_link: 'Voir votre Daily 15 →',
+    checkin_complete_title: 'Check-in terminé',
+    checkin_complete_desc: 'Votre tableau de bord a été mis à jour avec les priorités du jour. À demain.',
+    checkin_complete_link: 'Aller au tableau de bord →',
+    thinking: 'Réflexion...',
+    connection_error: 'Erreur de connexion. Réessayez.',
+    something_wrong: 'Un problème est survenu. Réessayez.',
+    type_own_answer: 'Taper ma propre réponse...',
+    start_over: 'Recommencer? Cela efface la conversation.',
+    reset_failed: 'Échec de la réinitialisation. Veuillez réessayer.',
+    welcome_back: 'Bon retour',
+    log_in_to_continue: 'Connectez-vous pour continuer votre sondage',
+    log_in: 'Se connecter',
+    register: 'S\'inscrire',
+    create_account: 'Créer un compte',
+    register_to_start: 'Inscrivez-vous pour commencer votre sondage',
+    logging_in: 'Connexion…',
+    registering: 'Inscription…',
+    enter_email_password: 'Veuillez entrer votre email et mot de passe.',
+    something_wrong_generic: 'Un problème est survenu. Réessayez.',
+    conn_error_auth: 'Erreur de connexion. Réessayez.',
+    settings: 'Paramètres',
+    settings_desc: 'Langue et rappels quotidiens.',
+    language: 'Langue',
+    reminders_enabled: 'Rappels activés',
+    save_settings: 'Enregistrer les paramètres',
+    view_transcript: 'Voir la transcription complète',
+    conversation: 'Conversation',
+  }
+};
+
+// Translation lookup function
+function t(key, params) {
+  let text = translations[key] || FALLBACK_TRANSLATIONS[currentLang]?.[key] || FALLBACK_TRANSLATIONS.en[key] || key;
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      text = text.replace(`{${k}}`, v);
+    }
+  }
+  return text;
+}
+
+// Fetch translations from server; fall back to bundled set
+async function loadTranslations(lang) {
+  try {
+    const resp = await fetch(`/api/i18n/${lang}`);
+    if (resp.ok) {
+      translations = await resp.json();
+    } else {
+      translations = FALLBACK_TRANSLATIONS[lang] || FALLBACK_TRANSLATIONS.en;
+    }
+  } catch (e) {
+    translations = FALLBACK_TRANSLATIONS[lang] || FALLBACK_TRANSLATIONS.en;
+  }
+}
+
+// Change language (called from settings dropdown)
+async function changeLanguage(lang) {
+  currentLang = lang;
+  localStorage.setItem('survey_lang', lang);
+  await loadTranslations(lang);
+  applyTranslations();
+}
+
+// Apply translations to static DOM elements
+function applyTranslations() {
+  // Auth screen
+  document.getElementById('auth-title').textContent = t('welcome_back');
+  document.getElementById('auth-sub').textContent = t('log_in_to_continue');
+  document.getElementById('tab-login').textContent = t('log_in');
+  document.getElementById('tab-register').textContent = t('register');
+  document.getElementById('auth-submit').textContent = t('log_in');
+  const emailLabel = document.querySelector('label[for="auth-email"]');
+  if (emailLabel) emailLabel.textContent = 'Email';
+  const pwLabel = document.querySelector('label[for="auth-password"]');
+  if (pwLabel) pwLabel.textContent = 'Password';
+
+  // Settings modal
+  const settingsH3 = document.querySelector('#settings-modal h3');
+  if (settingsH3) settingsH3.textContent = t('settings');
+  const settingsP = document.querySelector('#settings-modal > .settings-card > p');
+  if (settingsP) settingsP.textContent = t('settings_desc');
+  const langLabel = document.querySelector('.lang-select-label');
+  if (langLabel) langLabel.textContent = t('language');
+
+  // Language select
+  const langSelect = document.getElementById('lang-select');
+  if (langSelect) langSelect.value = currentLang;
+
+  // Settings modal toggle label
+  const settingsToggleLabel = document.getElementById('settings-toggle-label');
+  if (settingsToggleLabel) settingsToggleLabel.textContent = t('reminders_enabled');
+
+  // Settings save button
+  const settingsSaveBtn = document.getElementById('settings-save-btn');
+  if (settingsSaveBtn) settingsSaveBtn.textContent = t('save_settings');
+
+  // Mode pill
+  updateModePill(currentMode);
+  updateHeader();
+}
+
+// ── White-label branding ──────────────────────────────────────
+let branding = null;
+
+async function loadBranding(sid) {
+  try {
+    const resp = await fetch(`/api/branding/${encodeURIComponent(sid)}`);
+    if (resp.ok) {
+      branding = await resp.json();
+    } else {
+      branding = null;
+    }
+  } catch (e) {
+    branding = null;
+  }
+  applyBranding();
+}
+
+function applyBranding() {
+  if (!branding) return;
+
+  // Apply primary_color as CSS variable overrides
+  if (branding.primary_color) {
+    document.documentElement.style.setProperty('--accent', branding.primary_color);
+    document.documentElement.style.setProperty('--warm-dark', branding.primary_color);
+    // Derive a soft version for accent-soft
+    const soft = hexToRgba(branding.primary_color, 0.08);
+    if (soft) document.documentElement.style.setProperty('--accent-soft', soft);
+  }
+
+  // Replace business name in header
+  if (branding.business_name) {
+    const titleEl = document.querySelector('.header-title');
+    if (titleEl) titleEl.textContent = branding.business_name;
+    document.title = `${branding.business_name} — Business Survey`;
+    const appleTitle = document.querySelector('meta[name="apple-mobile-web-app-title"]');
+    if (appleTitle) appleTitle.setAttribute('content', branding.business_name);
+  }
+
+  // Replace logo in header
+  if (branding.logo_url) {
+    const brandMark = document.querySelector('.header .brand-mark');
+    if (brandMark) {
+      brandMark.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = branding.logo_url;
+      img.className = 'brand-logo';
+      img.alt = branding.business_name || 'Brand';
+      brandMark.appendChild(img);
+    }
+  }
+}
+
+// Helper: convert hex color to rgba string
+function hexToRgba(hex, alpha) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!m) return null;
+  const r = parseInt(m[1], 16);
+  const g = parseInt(m[2], 16);
+  const b = parseInt(m[3], 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// ── Voice input (Web Speech API) ──────────────────────────────
+let speechRecognition = null;
+let isRecording = false;
+
+// Initialize speech recognition object
+function initSpeechRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const recognition = new SR();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = currentLang === 'fr' ? 'fr-FR' : 'en-US';
+
+  recognition.onresult = (event) => {
+    let interimTranscript = '';
+    let finalTranscript = '';
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript;
+      } else {
+        interimTranscript += transcript;
+      }
+    }
+    const ta = document.getElementById('text-answer');
+    if (ta) {
+      ta.value = finalTranscript || interimTranscript;
+      autoGrow(ta);
+    }
+  };
+
+  recognition.onend = () => {
+    isRecording = false;
+    updateMicButtonState();
+  };
+
+  recognition.onerror = (event) => {
+    isRecording = false;
+    updateMicButtonState();
+    console.error('Speech recognition error:', event.error);
+  };
+
+  return recognition;
+}
+
+// Check if Web Speech API is available
+function isSpeechRecognitionAvailable() {
+  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+
+// Show or hide mic button based on API availability and mode
+function showMicButton() {
+  const micBtn = document.getElementById('mic-btn');
+  if (!micBtn) return;
+  if (isSpeechRecognitionAvailable() && currentMode === 'checkin') {
+    micBtn.style.display = 'flex';
+  } else {
+    micBtn.style.display = 'none';
+  }
+}
+
+// Toggle voice input on/off
+function toggleVoiceInput() {
+  if (isRecording) {
+    stopVoiceInput();
+    return;
+  }
+  startVoiceInput();
+}
+
+function startVoiceInput() {
+  if (!isSpeechRecognitionAvailable()) return;
+  if (!speechRecognition) {
+    speechRecognition = initSpeechRecognition();
+    if (!speechRecognition) return;
+  }
+  speechRecognition.lang = currentLang === 'fr' ? 'fr-FR' : 'en-US';
+  try {
+    speechRecognition.start();
+    isRecording = true;
+    updateMicButtonState();
+  } catch (e) {
+    // start() throws if already started
+    isRecording = false;
+    updateMicButtonState();
+  }
+}
+
+function stopVoiceInput() {
+  if (speechRecognition && isRecording) {
+    try { speechRecognition.stop(); } catch(e) {}
+  }
+  isRecording = false;
+  updateMicButtonState();
+}
+
+function updateMicButtonState() {
+  const micBtn = document.getElementById('mic-btn');
+  const indicator = document.getElementById('recording-indicator');
+  if (!micBtn) return;
+  if (isRecording) {
+    micBtn.classList.add('recording');
+    if (indicator) indicator.classList.add('show');
+  } else {
+    micBtn.classList.remove('recording');
+    if (indicator) indicator.classList.remove('show');
+  }
+}
 
 // ── Auth token management ──────────────────────────────────────
 function getAuthToken() {
@@ -636,16 +1051,16 @@ function switchAuthMode(mode) {
   if (mode === 'login') {
     loginTab.classList.add('active');
     registerTab.classList.remove('active');
-    title.textContent = 'Welcome back';
-    sub.textContent = 'Log in to continue your survey';
-    submitBtn.textContent = 'Log In';
+    title.textContent = t('welcome_back');
+    sub.textContent = t('log_in_to_continue');
+    submitBtn.textContent = t('log_in');
     pwInput.setAttribute('autocomplete', 'current-password');
   } else {
     loginTab.classList.remove('active');
     registerTab.classList.add('active');
-    title.textContent = 'Create account';
-    sub.textContent = 'Register to start your survey';
-    submitBtn.textContent = 'Register';
+    title.textContent = t('create_account');
+    sub.textContent = t('register_to_start');
+    submitBtn.textContent = t('register');
     pwInput.setAttribute('autocomplete', 'new-password');
   }
   document.getElementById('auth-error').classList.remove('show');
@@ -657,12 +1072,12 @@ async function handleAuth() {
   const submitBtn = document.getElementById('auth-submit');
 
   if (!email || !password) {
-    showAuthError('Please enter your email and password.');
+    showAuthError(t('enter_email_password'));
     return;
   }
 
   submitBtn.disabled = true;
-  submitBtn.textContent = authMode === 'login' ? 'Logging in…' : 'Registering…';
+  submitBtn.textContent = authMode === 'login' ? t('logging_in') : t('registering');
 
   try {
     const endpoint = authMode === 'login' ? `${AUTH_API}/login` : `${AUTH_API}/register`;
@@ -675,7 +1090,7 @@ async function handleAuth() {
     const data = await resp.json();
 
     if (!resp.ok) {
-      showAuthError(data.detail || 'Something went wrong. Try again.');
+      showAuthError(data.detail || t('something_wrong_generic'));
       return;
     }
 
@@ -686,10 +1101,10 @@ async function handleAuth() {
     // Initialize the survey
     init();
   } catch (e) {
-    showAuthError('Connection error. Try again.');
+    showAuthError(t('conn_error_auth'));
   } finally {
     submitBtn.disabled = false;
-    submitBtn.textContent = authMode === 'login' ? 'Log In' : 'Register';
+    submitBtn.textContent = authMode === 'login' ? t('log_in') : t('register');
   }
 }
 
@@ -714,6 +1129,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (e.key === 'Enter') document.getElementById('auth-password').focus();
     });
   }
+
+  // Apply translations to the auth screen immediately
+  // (init() will also call this for authenticated users)
+  loadTranslations(currentLang).then(() => applyTranslations());
 
   // Check if user is authenticated before loading survey
   checkAuthAndInit();
@@ -776,6 +1195,10 @@ function autoScroll() {
 
 async function init() {
   try {
+    // Load branding and translations before rendering anything
+    await Promise.all([loadBranding(sessionId), loadTranslations(currentLang)]);
+    applyTranslations();
+
     // Check if user has completed onboarding
     const status = await fetchWithTimeout(`${API}/checkin/status?session_id=${sessionId}`).then(r => r.json());
 
@@ -785,9 +1208,14 @@ async function init() {
       updateModePill('checkin');
       const chat = document.getElementById('chat-area');
       const lastCheckin = status.latest_checkin;
-      const greeting = lastCheckin
-        ? `Welcome back. You checked in on ${new Date(lastCheckin.created_at).toLocaleDateString()}. Ready for today's check-in?`
-        : 'Welcome back. Ready for a quick 2-minute check-in?';
+      let greeting;
+      if (branding && branding.custom_welcome) {
+        greeting = branding.custom_welcome;
+      } else if (lastCheckin) {
+        greeting = `${t('checkin_greeting_return')} ${new Date(lastCheckin.created_at).toLocaleDateString()}. ${t('checkin_greeting_new').replace('Welcome back. ', '')}`;
+      } else {
+        greeting = t('checkin_greeting_new');
+      }
       chat.innerHTML = '';
       chat.classList.add('mode-transition');
       setTimeout(() => chat.classList.remove('mode-transition'), 600);
@@ -795,7 +1223,7 @@ async function init() {
       wrapper.className = 'msg-ai';
       const bubble = document.createElement('div');
       bubble.className = 'msg-ai-bubble';
-      bubble.textContent = `${greeting} What's on your plate today?`;
+      bubble.textContent = `${greeting} ${t('checkin_prompt')}`;
       wrapper.appendChild(bubble);
       chat.appendChild(wrapper);
       autoScroll();
@@ -812,7 +1240,7 @@ async function init() {
     totalQuestions = state.total_questions || 0;
 
     // Update the static HTML header and progress bar max from the API value
-    document.getElementById('header-sub').textContent = `Question ${qIndex + 1} of ${totalQuestions}`;
+    document.getElementById('header-sub').textContent = t('question_of', { n: qIndex + 1, total: totalQuestions });
     document.getElementById('progress-bar').setAttribute('aria-valuemax', String(totalQuestions));
 
     if (state.conversation && state.conversation.length > 0) {
@@ -827,9 +1255,9 @@ async function init() {
       wrapper.className = 'msg-ai';
       const bubble = document.createElement('div');
       bubble.className = 'msg-ai-bubble';
-      bubble.textContent = 'Hey — quick survey about how you run your business day to day. No wrong answers, just want to understand your world. First: ';
+      bubble.textContent = t('survey_greeting');
       const strong = document.createElement('strong');
-      strong.textContent = 'what kind of business do you run?';
+      strong.textContent = t('survey_greeting_q');
       bubble.appendChild(strong);
       wrapper.appendChild(bubble);
       chat.appendChild(wrapper);
@@ -895,9 +1323,9 @@ function updateProgress() {
 function updateHeader() {
   const sub = document.getElementById('header-sub');
   if (qIndex < totalQuestions) {
-    sub.textContent = `Question ${qIndex + 1} of ${totalQuestions}`;
+    sub.textContent = t('question_of', { n: qIndex + 1, total: totalQuestions });
   } else {
-    sub.textContent = 'Complete';
+    sub.textContent = t('complete');
   }
 }
 
@@ -905,7 +1333,7 @@ function updateModePill(mode) {
   const pill = document.getElementById('mode-pill');
   if (!pill) return;
   pill.className = `mode-pill ${mode}`;
-  pill.textContent = mode === 'checkin' ? 'Daily Check-in' : 'Onboarding';
+  pill.textContent = mode === 'checkin' ? t('daily_checkin') : t('onboarding');
 }
 
 function showInput(choices) {
@@ -951,7 +1379,7 @@ function showInput(choices) {
     ownBtn.appendChild(ownDot);
 
     const ownSpan = document.createElement('span');
-    ownSpan.textContent = 'Type my own answer...';
+    ownSpan.textContent = t('type_own_answer');
     ownBtn.appendChild(ownSpan);
 
     container.appendChild(ownBtn);
@@ -960,10 +1388,13 @@ function showInput(choices) {
     autoScroll();
   } else {
     area.innerHTML = `
+      <div class="recording-indicator" id="recording-indicator"><div class="recording-dot"></div><span>${t('listening')}</span></div>
       <div class="text-wrap">
-        <textarea class="text-input" id="text-answer" placeholder="Type your answer..." rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)" aria-label="Type your answer"></textarea>
+        <textarea class="text-input" id="text-answer" placeholder="${t('type_answer')}" rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)" aria-label="${t('type_answer')}"></textarea>
+        <button class="mic-btn" id="mic-btn" onclick="toggleVoiceInput()" aria-label="Voice input" style="display:none">🎤</button>
         <button class="send-btn" onclick="submitTextAnswer()" id="send-btn" aria-label="Send answer">→</button>
       </div>`;
+    if (currentMode === 'checkin') showMicButton();
     setTimeout(() => document.getElementById('text-answer')?.focus(), 50);
     autoScroll();
   }
@@ -973,10 +1404,13 @@ function switchToTextInput() {
   // Replace choices with a text input, keeping the same choices context
   const area = document.getElementById('input-area');
   area.innerHTML = `
+    <div class="recording-indicator" id="recording-indicator"><div class="recording-dot"></div><span>${t('listening')}</span></div>
     <div class="text-wrap">
-      <textarea class="text-input" id="text-answer" placeholder="Type your answer..." rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
+      <textarea class="text-input" id="text-answer" placeholder="${t('type_answer')}" rows="1" onkeydown="handleKey(event)" oninput="autoGrow(this)"></textarea>
+      <button class="mic-btn" id="mic-btn" onclick="toggleVoiceInput()" aria-label="Voice input" style="display:none">🎤</button>
       <button class="send-btn" onclick="submitTextAnswer()" id="send-btn">→</button>
     </div>`;
+  if (currentMode === 'checkin') showMicButton();
   setTimeout(() => document.getElementById('text-answer')?.focus(), 50);
   autoScroll();
 }
@@ -985,7 +1419,7 @@ function showThinking() {
   // Replace input area with a disabled-looking placeholder
   // so the chat bar is empty but visible while AI is thinking
   const area = document.getElementById('input-area');
-  area.innerHTML = '<div class="text-wrap"><div class="text-input" style="opacity:0.4;cursor:default">Thinking...</div><button class="send-btn" disabled>→</button></div>';
+  area.innerHTML = `<div class="text-wrap"><div class="text-input" style="opacity:0.4;cursor:default">${t('thinking')}</div><button class="send-btn" disabled>→</button></div>`;
 }
 
 function showComplete() {
@@ -999,16 +1433,16 @@ function showComplete() {
   div.appendChild(icon);
 
   const h2 = document.createElement('h2');
-  h2.textContent = "That's everything";
+  h2.textContent = t('complete_title');
   div.appendChild(h2);
 
   const p = document.createElement('p');
-  p.textContent = "Your dashboard has been updated with a real picture of where you're at. Here's what your Daily 15 could look like.";
+  p.textContent = t('complete_desc');
   div.appendChild(p);
 
   const link = document.createElement('a');
   link.href = `/dashboard.html?session=${sessionId}`;
-  link.textContent = 'See your Daily 15 →';
+  link.textContent = t('complete_link');
   link.setAttribute('style', 'display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px');
   div.appendChild(link);
 
@@ -1050,7 +1484,7 @@ function showComplete() {
   rtoggleRow.className = 'reminder-toggle-row';
   const rtoggleLabel = document.createElement('span');
   rtoggleLabel.className = 'reminder-toggle-label';
-  rtoggleLabel.textContent = 'Reminders enabled';
+  rtoggleLabel.textContent = t('reminders_enabled');
   const rtoggle = document.createElement('div');
   rtoggle.className = 'toggle-switch on';
   rtoggle.id = 'complete-reminder-toggle';
@@ -1069,7 +1503,7 @@ function showComplete() {
 
   const rbtn = document.createElement('button');
   rbtn.className = 'reminder-save-btn';
-  rbtn.textContent = 'Save Reminder Settings';
+  rbtn.textContent = t('save_settings');
   rbtn.onclick = () => saveReminderSettings('complete');
   reminder.appendChild(rbtn);
 
@@ -1082,7 +1516,7 @@ function showComplete() {
 
   const toggle = document.createElement('div');
   toggle.className = 'transcript-toggle';
-  toggle.textContent = 'View full transcript';
+  toggle.textContent = t('view_transcript');
   toggle.setAttribute('style', 'margin-top:16px');
   toggle.onclick = toggleTranscript;
   div.appendChild(toggle);
@@ -1096,7 +1530,7 @@ function showComplete() {
   chat.scrollTop = chat.scrollHeight;
   autoScroll();
   document.getElementById('input-area').innerHTML = '';
-  document.getElementById('header-sub').textContent = 'Complete';
+  document.getElementById('header-sub').textContent = t('complete');
   loadTranscript();
 }
 
@@ -1111,16 +1545,16 @@ function showCheckinComplete() {
   div.appendChild(icon);
 
   const h2 = document.createElement('h2');
-  h2.textContent = 'Check-in done';
+  h2.textContent = t('checkin_complete_title');
   div.appendChild(h2);
 
   const p = document.createElement('p');
-  p.textContent = 'Your dashboard has been updated with today\'s priorities. See you tomorrow.';
+  p.textContent = t('checkin_complete_desc');
   div.appendChild(p);
 
   const link = document.createElement('a');
   link.href = `/dashboard.html?session=${sessionId}`;
-  link.textContent = 'Go to dashboard →';
+  link.textContent = t('checkin_complete_link');
   link.setAttribute('style', 'display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px');
   div.appendChild(link);
 
@@ -1128,7 +1562,7 @@ function showCheckinComplete() {
   chat.scrollTop = chat.scrollHeight;
   autoScroll();
   document.getElementById('input-area').innerHTML = '';
-  document.getElementById('header-sub').textContent = 'Check-in complete';
+  document.getElementById('header-sub').textContent = t('checkin_complete_title');
 }
 
 async function submitAnswer(answer) {
@@ -1168,7 +1602,7 @@ async function submitAnswer(answer) {
     });
 
     if (!resp.ok) {
-      aiBubble.textContent = 'Something went wrong. Try again.';
+      aiBubble.textContent = t('something_wrong');
       isStreaming = false;
       showInput(currentChoices);
       return;
@@ -1260,7 +1694,7 @@ async function submitAnswer(answer) {
     }
 
   } catch (e) {
-    aiBubble.textContent = 'Connection error. Try again.';
+    aiBubble.textContent = t('connection_error');
   }
 
   isStreaming = false;
@@ -1290,9 +1724,9 @@ function autoGrow(el) {
 }
 
 async function resetSurvey() {
-  if (!confirm('Start over? This clears the conversation.')) return;
+  if (!confirm(t('start_over'))) return;
   const resp = await fetchWithTimeout(`${API}/reset?session_id=${sessionId}`, { method: 'POST' });
-  if (!resp.ok) { alert('Reset failed. Please try again.'); return; }
+  if (!resp.ok) { alert(t('reset_failed')); return; }
   location.reload();
 }
 
@@ -1303,7 +1737,7 @@ async function loadTranscript() {
     if (!panel) return;
 
     const conv = data.conversation || [];
-    let html = '<h4>Conversation</h4>';
+    let html = `<h4>${t('conversation')}</h4>`;
     for (let i = 0; i < conv.length; i++) {
       const msg = conv[i];
       if (msg.role === 'assistant') {

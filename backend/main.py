@@ -9,10 +9,10 @@ Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
 """
 from __future__ import annotations
 
-import os, json, time, re, asyncio, logging, csv, io
+import os, json, time, re, asyncio, logging, csv, io, wave
 import hashlib, hmac, secrets, base64
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import httpx
 import smtplib
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 # V3-7: retain references to background tasks to prevent GC from cancelling them
 _background_tasks: set = set()
 
-from fastapi import FastAPI, HTTPException, Header, Body, Depends, Request
+from fastapi import FastAPI, HTTPException, Header, Body, Depends, Request, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -97,6 +97,12 @@ SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASS = os.getenv("SMTP_PASS", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
+
+# Voice transcription settings
+SPEECH_API_KEY = os.getenv("SPEECH_API_KEY", "")
+
+# Multi-language support (default 'en')
+LANGUAGE = os.getenv("LANGUAGE", "en")
 
 # ── Auth config ──────────────────────────────────────────────────
 # Secret used to sign session tokens. Falls back to a random per-process
@@ -461,6 +467,18 @@ async def init_db():
     )
     """)
 
+    # ── White-label branding ───────────────────────────────────────
+    await _turso_execute("""
+    CREATE TABLE IF NOT EXISTS branding (
+        business_id INTEGER PRIMARY KEY,
+        logo_url TEXT DEFAULT '',
+        primary_color TEXT DEFAULT '',
+        business_name TEXT DEFAULT '',
+        custom_welcome TEXT DEFAULT '',
+        updated_at TEXT DEFAULT (datetime('now'))
+    )
+    """)
+
     # Link survey_sessions and checkin_sessions to business_id (idempotent)
     for _tbl in ("survey_sessions", "checkin_sessions"):
         try:
@@ -707,6 +725,12 @@ def _is_public_path(path: str) -> bool:
     # the user auth middleware so they return 404 when ADMIN_TOKEN
     # is not set, rather than being blocked by the Bearer token check.
     if path.startswith("/api/admin/"):
+        return True
+    # Public branding endpoint (GET) — frontend fetches on load before auth
+    if path.startswith("/api/branding/") and not path.endswith("/branding"):
+        return True
+    # i18n translations are public (needed before login)
+    if path.startswith("/api/i18n/"):
         return True
     # /api/survey/reset is auth-required when it's a POST, but we allow
     # it as a public path only for GET (which doesn't exist). POST reset
@@ -967,6 +991,52 @@ DEFAULT_CHECKIN = [
     "Ask if they had any wins since last time — anything go well?",
     "Wrap up naturally. Tell them you've noted their priorities and the dashboard is ready.",
 ]
+
+
+# ── Multi-language i18n support ─────────────────────────────────
+# Translation dictionaries for key UI strings. 'en' is the source language.
+_I18N_STRINGS_EN: dict[str, str] = {
+    "survey_greeting": "Hi! Let's get to know your business. I'll ask a few quick questions.",
+    "checkin_greeting": "Hey! Ready for a quick check-in? How's your day going?",
+    "btn_start": "Start Survey",
+    "btn_continue": "Continue",
+    "btn_submit": "Submit",
+    "btn_next": "Next",
+    "btn_back": "Back",
+    "btn_skip": "Skip",
+    "btn_finish": "Finish",
+    "progress_text": "Question {current} of {total}",
+    "complete_survey": "Survey complete! Thank you for your time.",
+    "complete_checkin": "Check-in complete! Your dashboard is updated.",
+    "btn_checkin": "Daily Check-in",
+    "btn_dashboard": "Go to Dashboard",
+    "loading": "Loading...",
+    "error_generic": "Something went wrong. Please try again.",
+}
+
+_I18N_STRINGS_FR: dict[str, str] = {
+    "survey_greeting": "Bonjour! Faisons connaissance avec votre entreprise. Je vais poser quelques questions rapides.",
+    "checkin_greeting": "Salut! Prêt pour un petit point? Comment se passe votre journée?",
+    "btn_start": "Commencer le sondage",
+    "btn_continue": "Continuer",
+    "btn_submit": "Envoyer",
+    "btn_next": "Suivant",
+    "btn_back": "Retour",
+    "btn_skip": "Passer",
+    "btn_finish": "Terminer",
+    "progress_text": "Question {current} sur {total}",
+    "complete_survey": "Sondage terminé! Merci pour votre temps.",
+    "complete_checkin": "Point terminé! Votre tableau de bord est mis à jour.",
+    "btn_checkin": "Point quotidien",
+    "btn_dashboard": "Aller au tableau de bord",
+    "loading": "Chargement...",
+    "error_generic": "Une erreur s'est produite. Veuillez réessayer.",
+}
+
+_I18N_DICTIONARIES: dict[str, dict[str, str]] = {
+    "en": _I18N_STRINGS_EN,
+    "fr": _I18N_STRINGS_FR,
+}
 
 
 async def _build_checkin_prompt(session_id: str, conversation: list, checkin_step: int) -> str:
@@ -2195,10 +2265,134 @@ def _send_email_to_sync(msg: MIMEMultipart, to_email: str):
         server.sendmail(SMTP_USER, [to_email], msg.as_string())
 
 
+async def _send_weekly_summary(user_id: str, email: str):
+    """Fetch the past 7 days of check-ins for a user, generate an LLM summary,
+    and send a weekly digest email. Best-effort, non-blocking.
+
+    Subject: 'Your Daily 15 weekly summary'
+    """
+    if not email or not SMTP_USER:
+        logger.info("Weekly summary skipped — email or SMTP_USER not configured for user %s", user_id)
+        return
+    try:
+        # Find the user's survey session(s)
+        sess_rows = await _turso_query(
+            "SELECT session_id FROM survey_sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
+            [{"type": "text", "value": user_id}]
+        )
+        if not sess_rows or not sess_rows[0].get("session_id"):
+            logger.debug("Weekly summary: no session found for user %s", user_id)
+            return
+
+        session_id = sess_rows[0]["session_id"]
+
+        # Fetch all check-ins for this user's session
+        all_checkins = await _get_all_checkins(session_id)
+        if not all_checkins:
+            logger.debug("Weekly summary: no check-ins found for user %s", user_id)
+            return
+
+        # Filter to the past 7 days
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        recent_checkins = []
+        for ci in all_checkins:
+            ci_date_str = ci.get("created_at") or ""
+            try:
+                # Turso returns 'YYYY-MM-DD HH:MM:SS' (UTC)
+                ci_date = datetime.strptime(ci_date_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+            if ci_date >= cutoff:
+                recent_checkins.append(ci)
+
+        if not recent_checkins:
+            logger.debug("Weekly summary: no check-ins in the past 7 days for user %s", user_id)
+            return
+
+        # Build a compact digest of the week's check-ins
+        digest_lines = []
+        all_stress = []
+        all_wins = []
+        for ci in recent_checkins:
+            date_str = ci.get("created_at", "")[:10]
+            summary = ci.get("summary", "")
+            stress = ci.get("stress_points", [])
+            wins = ci.get("wins", [])
+            all_stress.extend(stress)
+            all_wins.extend(wins)
+            digest_lines.append(f"[{date_str}] Summary: {summary}")
+            if stress:
+                digest_lines.append(f"  Stress: {', '.join(stress)}")
+            if wins:
+                digest_lines.append(f"  Wins: {', '.join(wins)}")
+
+        week_digest = "\n".join(digest_lines)
+
+        # Use LLM to generate a brief weekly summary
+        llm_summary = ""
+        if SPUR_DEMO_API_KEY:
+            try:
+                resp = await _spur_chat_completion(
+                    [
+                        {"role": "system", "content": (
+                            "You are a helpful assistant that summarizes a week of daily check-ins "
+                            "for a small business owner. Provide a brief, warm summary covering: "
+                            "what stressed them this week, what went well, and any trends you notice. "
+                            "Keep it to 3-4 short paragraphs. Be encouraging and specific."
+                        )},
+                        {"role": "user", "content": f"Here are the check-ins from the past week:\n\n{week_digest}\n\n"
+                                    f"Recurring stress points: {', '.join(all_stress) if all_stress else 'None'}\n"
+                                    f"Recurring wins: {', '.join(all_wins) if all_wins else 'None'}"},
+                    ],
+                    SURVEY_MODEL,
+                    temperature=0.5,
+                    max_tokens=500,
+                    timeout=45.0,
+                )
+                if resp.status_code == 200:
+                    llm_summary = _extract_llm_content(resp.json())
+            except Exception as e:
+                logger.debug("Weekly summary LLM call failed: %s", e)
+
+        # Build email body
+        body_parts = [
+            "Here's your weekly summary from Daily 15:",
+            "",
+        ]
+        if llm_summary:
+            body_parts.append(llm_summary)
+        else:
+            # Fallback: use the raw digest
+            body_parts.append("Your check-ins this week:")
+            body_parts.append("")
+            body_parts.append(week_digest)
+
+        body_parts.extend([
+            "",
+            "Keep up the great work!",
+            "",
+            "— The Daily 15 Team",
+        ])
+        body = "\n".join(body_parts)
+
+        msg = MIMEMultipart()
+        msg["From"] = SMTP_USER
+        msg["To"] = email
+        msg["Subject"] = "Your Daily 15 weekly summary"
+        msg.attach(MIMEText(body, "plain"))
+
+        await asyncio.to_thread(_send_email_to_sync, msg, email)
+        logger.info("Weekly summary email sent to %s for user %s", email, user_id)
+    except Exception as e:
+        logger.debug("_send_weekly_summary failed for user %s: %s", user_id, e)
+
+
 async def _send_reminder_loop():
     """Background loop: every 60s, check if any user's reminder_time matches
     the current time (HH:MM) and send a reminder email. Uses last_sent_date
     to avoid double-sending within the same day.
+
+    On Sundays at 18:00 (6pm), sends weekly summaries instead of daily reminders.
     """
     logger.info("Daily check-in reminder loop started")
     while True:
@@ -2206,34 +2400,67 @@ async def _send_reminder_loop():
             now = datetime.now(timezone.utc).astimezone()
             current_hhmm = now.strftime("%H:%M")
             today = now.strftime("%Y-%m-%d")
+            weekday = now.weekday()  # 0=Monday, 6=Sunday
 
-            # Query all enabled reminder settings where reminder_time matches current HH:MM
-            rows = await _turso_query(
-                "SELECT user_id, email, phone, reminder_time, last_sent_date FROM reminder_settings WHERE enabled=1 AND reminder_time=?",
-                [{"type": "text", "value": current_hhmm}]
-            )
+            # Sunday at 6pm: send weekly summaries to all users with reminders enabled
+            is_sunday_6pm = weekday == 6 and current_hhmm == "18:00"
+            weekly_sent_key = f"{today}_weekly"
 
-            for row in rows:
-                # Skip if already sent today
-                if row.get("last_sent_date") == today:
-                    continue
-                user_id = row.get("user_id")
-                email = row.get("email") or ""
-                if not email:
-                    continue
-                # Send reminder (fire-and-forget, best-effort)
-                try:
-                    await _send_checkin_reminder(user_id, email)
-                    # Mark as sent for today
-                    await _turso_execute(
-                        "UPDATE reminder_settings SET last_sent_date=? WHERE user_id=?",
-                        [
-                            {"type": "text", "value": today},
-                            {"type": "text", "value": user_id},
-                        ]
-                    )
-                except Exception as e:
-                    logger.debug("Reminder loop: failed to send to %s: %s", email, e)
+            if is_sunday_6pm:
+                # Fetch all enabled reminder settings for weekly summary
+                weekly_rows = await _turso_query(
+                    "SELECT user_id, email FROM reminder_settings WHERE enabled=1 AND last_sent_date != ?",
+                    [{"type": "text", "value": weekly_sent_key}]
+                )
+                for row in weekly_rows:
+                    user_id = row.get("user_id")
+                    email = row.get("email") or ""
+                    if not email:
+                        continue
+                    try:
+                        await _send_weekly_summary(user_id, email)
+                        # Mark as sent with weekly key to avoid double-sending
+                        await _turso_execute(
+                            "UPDATE reminder_settings SET last_sent_date=? WHERE user_id=?",
+                            [
+                                {"type": "text", "value": weekly_sent_key},
+                                {"type": "text", "value": user_id},
+                            ]
+                        )
+                    except Exception as e:
+                        logger.debug("Weekly summary loop: failed to send to %s: %s", email, e)
+                # Still fall through to check regular reminders (some users may have 18:00 set)
+            else:
+                # Skip daily reminders on Sunday 6pm (weekly summaries take precedence)
+                # On all other days/times, send regular daily reminders
+
+                # Query all enabled reminder settings where reminder_time matches current HH:MM
+                rows = await _turso_query(
+                    "SELECT user_id, email, phone, reminder_time, last_sent_date FROM reminder_settings WHERE enabled=1 AND reminder_time=?",
+                    [{"type": "text", "value": current_hhmm}]
+                )
+
+                for row in rows:
+                    # Skip if already sent today
+                    if row.get("last_sent_date") == today:
+                        continue
+                    user_id = row.get("user_id")
+                    email = row.get("email") or ""
+                    if not email:
+                        continue
+                    # Send reminder (fire-and-forget, best-effort)
+                    try:
+                        await _send_checkin_reminder(user_id, email)
+                        # Mark as sent for today
+                        await _turso_execute(
+                            "UPDATE reminder_settings SET last_sent_date=? WHERE user_id=?",
+                            [
+                                {"type": "text", "value": today},
+                                {"type": "text", "value": user_id},
+                            ]
+                        )
+                    except Exception as e:
+                        logger.debug("Reminder loop: failed to send to %s: %s", email, e)
 
         except Exception as e:
             logger.debug("_send_reminder_loop iteration error: %s", e)
@@ -2881,6 +3108,242 @@ async def list_business_members(user: dict = Depends(_auth_dependency)):
         "business_id": business_id,
         "business": business,
         "members": members,
+    }
+
+
+# ── Voice transcription endpoint ─────────────────────────────────
+@app.post("/api/transcribe")
+async def transcribe_audio(audio: UploadFile = File(...)):
+    """Accept a multipart audio file upload and return transcribed text.
+
+    Supports WAV files (parsed via Python's built-in `wave` module).
+    For webm/mp3, returns an error asking for WAV format.
+    If SPEECH_API_KEY is not set, returns a placeholder message.
+    """
+    # Read the uploaded file
+    content = await audio.read()
+    if not content:
+        return JSONResponse(
+            {"error": "Empty audio file uploaded."},
+            status_code=400,
+        )
+
+    filename = audio.filename or ""
+    # Determine format from extension or content type
+    ext = ""
+    if "." in filename:
+        ext = filename.rsplit(".", 1)[-1].lower()
+    content_type = (audio.content_type or "").lower()
+
+    # Accept .wav / audio/wav / audio/x-wav
+    is_wav = ext in ("wav",) or content_type in ("audio/wav", "audio/x-wav", "audio/wave")
+
+    if not is_wav:
+        # For webm/mp3 — return error asking for WAV
+        return JSONResponse(
+            {"error": "Only WAV audio is supported. Please upload a .wav file."},
+            status_code=415,
+        )
+
+    # Validate WAV format using the built-in wave module (no external deps)
+    wav_info = {}
+    try:
+        wav_buf = io.BytesIO(content)
+        with wave.open(wav_buf, "rb") as wf:
+            wav_info = {
+                "channels": wf.getnchannels(),
+                "sample_width": wf.getsampwidth(),
+                "framerate": wf.getframerate(),
+                "n_frames": wf.getnframes(),
+                "duration_seconds": round(wf.getnframes() / wf.getframerate(), 2) if wf.getframerate() else 0,
+            }
+    except wave.Error as e:
+        return JSONResponse(
+            {"error": f"Invalid WAV file: {str(e)[:200]}"},
+            status_code=400,
+        )
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Could not parse WAV file: {str(e)[:200]}"},
+            status_code=400,
+        )
+
+    # If SPEECH_API_KEY is not configured, return a placeholder
+    if not SPEECH_API_KEY:
+        return {
+            "text": "Voice transcription coming soon — SPEECH_API_KEY not configured",
+            "transcribed": False,
+            "audio_info": wav_info,
+        }
+
+    # SPEECH_API_KEY is set — call a Whisper-compatible endpoint via the SPUR API
+    try:
+        # Build multipart form for the speech-to-text API
+        files_payload = {
+            "file": (filename or "audio.wav", content, "audio/wav"),
+        }
+        if _use_pooled_clients:
+            client = _get_llm_client()
+            resp = await client.post(
+                f"{SPUR_API_BASE}/audio/transcriptions",
+                files=files_payload,
+                headers={"Authorization": f"Bearer {SPEECH_API_KEY}"},
+                timeout=60.0,
+            )
+        else:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    f"{SPUR_API_BASE}/audio/transcriptions",
+                    files=files_payload,
+                    headers={"Authorization": f"Bearer {SPEECH_API_KEY}"},
+                )
+        if resp.status_code == 200:
+            data = resp.json()
+            text = data.get("text", "")
+            return {
+                "text": text,
+                "transcribed": True,
+                "audio_info": wav_info,
+            }
+        else:
+            return JSONResponse(
+                {"error": f"Speech API returned {resp.status_code}: {resp.text[:200]}"},
+                status_code=502,
+            )
+    except Exception as e:
+        return JSONResponse(
+            {"error": f"Speech API request failed: {str(e)[:200]}"},
+            status_code=500,
+        )
+
+
+# ── White-label branding endpoints ───────────────────────────────
+class BrandingRequest(BaseModel):
+    business_id: int
+    logo_url: str = ""
+    primary_color: str = ""
+    business_name: str = ""
+    custom_welcome: str = ""
+
+    @field_validator("business_id")
+    @classmethod
+    def validate_business_id(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("business_id must be a positive integer")
+        return v
+
+    @field_validator("logo_url")
+    @classmethod
+    def validate_logo_url(cls, v: str) -> str:
+        if v and len(v) > 2000:
+            raise ValueError("logo_url must be 2000 characters or fewer")
+        return v
+
+    @field_validator("primary_color")
+    @classmethod
+    def validate_primary_color(cls, v: str) -> str:
+        # Accept hex colors like #ffffff or named colors
+        if v and len(v) > 50:
+            raise ValueError("primary_color must be 50 characters or fewer")
+        return v
+
+    @field_validator("business_name")
+    @classmethod
+    def validate_business_name(cls, v: str) -> str:
+        if v and len(v) > 200:
+            raise ValueError("business_name must be 200 characters or fewer")
+        return v
+
+    @field_validator("custom_welcome")
+    @classmethod
+    def validate_custom_welcome(cls, v: str) -> str:
+        if v and len(v) > 1000:
+            raise ValueError("custom_welcome must be 1000 characters or fewer")
+        return v
+
+
+@app.get("/api/branding/{business_id}")
+async def get_branding(business_id: int):
+    """Get white-label branding config for a business. Public endpoint."""
+    rows = await _turso_query(
+        "SELECT logo_url, primary_color, business_name, custom_welcome FROM branding WHERE business_id=?",
+        [{"type": "integer", "value": str(business_id)}]
+    )
+    if rows:
+        r = rows[0]
+        return {
+            "logo_url": r.get("logo_url") or "",
+            "primary_color": r.get("primary_color") or "",
+            "business_name": r.get("business_name") or "",
+            "custom_welcome": r.get("custom_welcome") or "",
+        }
+    # No branding configured — return defaults
+    return {
+        "logo_url": "",
+        "primary_color": "",
+        "business_name": "",
+        "custom_welcome": "",
+    }
+
+
+@app.post("/api/branding")
+async def save_branding(req: BrandingRequest, user: dict = Depends(_auth_dependency)):
+    """Save white-label branding for a business. Requires auth — user must own the business."""
+    # Verify the current user is a member (owner) of this business
+    member_rows = await _turso_query(
+        "SELECT role FROM business_members WHERE business_id=? AND user_id=?",
+        [
+            {"type": "integer", "value": str(req.business_id)},
+            {"type": "text", "value": user["user_id"]},
+        ]
+    )
+    if not member_rows:
+        raise HTTPException(status_code=403, detail="You are not a member of this business.")
+    role = member_rows[0].get("role", "")
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Only business owners can update branding.")
+
+    # Upsert branding config
+    await _turso_execute(
+        """INSERT OR REPLACE INTO branding (business_id, logo_url, primary_color, business_name, custom_welcome, updated_at)
+           VALUES (?, ?, ?, ?, ?, datetime('now'))""",
+        [
+            {"type": "integer", "value": str(req.business_id)},
+            {"type": "text", "value": req.logo_url},
+            {"type": "text", "value": req.primary_color},
+            {"type": "text", "value": req.business_name},
+            {"type": "text", "value": req.custom_welcome},
+        ]
+    )
+
+    return {
+        "status": "ok",
+        "branding": {
+            "business_id": req.business_id,
+            "logo_url": req.logo_url,
+            "primary_color": req.primary_color,
+            "business_name": req.business_name,
+            "custom_welcome": req.custom_welcome,
+        },
+    }
+
+
+# ── Multi-language i18n endpoint ──────────────────────────────────
+@app.get("/api/i18n/{lang}")
+async def get_i18n(lang: str):
+    """Return the translation dictionary for the requested language.
+    Falls back to English if the language is not available.
+    """
+    lang = lang.strip().lower()
+    translations = _I18N_DICTIONARIES.get(lang)
+    if translations is None:
+        # Fall back to English
+        translations = _I18N_STRINGS_EN
+        lang = "en"
+    return {
+        "language": lang,
+        "default_language": LANGUAGE,
+        "translations": translations,
     }
 
 

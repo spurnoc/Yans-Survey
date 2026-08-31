@@ -566,6 +566,155 @@ async function fetchData(sessionId) {
   };
 }
 
+// ── i18n (multi-language support) ──────────────────────────────
+const I18N_DEFAULTS = {
+  // Header / mode
+  header_title: 'Daily 15',
+  header_dashboard_aria: 'Daily 15 Dashboard',
+  mode_onboarding: 'Onboarding',
+  mode_checkin: 'Daily Check-in',
+  // Card kickers
+  kicker_sales: 'Sales', kicker_reviews: 'Reviews', kicker_social: 'Social',
+  kicker_catering: 'Catering', kicker_inventory: 'Inventory',
+  kicker_checklist: 'Daily Checklist', kicker_goals: 'Goals',
+  kicker_wellbeing: 'Wellbeing', kicker_appointments: 'Appointments',
+  kicker_pipeline: 'Job Pipeline', kicker_retention: 'Client Retention',
+  kicker_memberships: 'Memberships', kicker_routes: 'Daily Route',
+  kicker_equipment: 'Equipment', kicker_invoices: 'Invoices',
+  kicker_staff: 'Staff', kicker_expenses: 'Expenses',
+  kicker_contacts: 'Contacts', kicker_decisions: 'Decision Log',
+  kicker_staff_schedule: 'Staff Schedule',
+  // Card titles
+  title_sales: 'Today at a glance', title_reviews: 'Customer feedback',
+  title_social: 'Content queue', title_catering: 'Pipeline',
+  title_inventory: 'Supply schedule', title_checklist: 'Your daily tasks',
+  title_goals: 'This month', title_wellbeing: 'How are things today?',
+  title_appointments: "Today's schedule", title_pipeline: 'Active jobs',
+  title_retention: 'Customer loyalty', title_memberships: 'Active members',
+  title_routes: 'Delivery stops', title_equipment: 'Maintenance status',
+  title_invoices: 'Billing overview', title_staff: 'Your team',
+  title_expenses: 'Monthly spending', title_contacts: 'Your network',
+  title_decisions: 'Pending decisions', title_staff_schedule: "Today's shifts",
+  // Card empty-state messages
+  empty_sales: 'Connect your POS system', empty_reviews: 'Connect Google Reviews',
+  empty_social: 'Connect Instagram', empty_catering: 'Connect your email',
+  empty_inventory: 'Set up delivery schedule', empty_checklist: 'Create your checklist',
+  empty_goals: 'Set your goals', empty_wellbeing: 'How are you feeling?',
+  empty_appointments: 'Connect your calendar', empty_pipeline: 'Connect your job tracker',
+  empty_retention: 'Connect customer data', empty_memberships: 'Connect membership system',
+  empty_routes: 'Set up your routes', empty_equipment: 'Log your equipment',
+  empty_invoices: 'Connect your invoicing', empty_staff: 'Add your staff',
+  empty_expenses: 'Connect your expenses', empty_contacts: 'Import contacts',
+  empty_decisions: 'Log your first decision', empty_staff_schedule: 'Set up scheduling',
+  // Card CTA button labels
+  btn_sales: 'Connect POS', btn_reviews: 'Connect Google',
+  btn_social: 'Connect Instagram', btn_catering: 'Connect Email',
+  btn_inventory: 'Set Up', btn_checklist: 'Create', btn_goals: 'Set Goals',
+  btn_wellbeing: 'Check In', btn_appointments: 'Connect Calendar',
+  btn_pipeline: 'Connect', btn_retention: 'Connect', btn_memberships: 'Connect',
+  btn_routes: 'Set Up', btn_equipment: 'Add Equipment', btn_invoices: 'Connect',
+  btn_staff: 'Add Staff', btn_expenses: 'Connect', btn_contacts: 'Import',
+  btn_decisions: 'Get Started', btn_staff_schedule: 'Set Up',
+  // Card priority badge
+  card_priority: 'Top of mind',
+  // Dashboard empty states
+  empty_no_dash_title: 'No dashboard yet',
+  empty_no_dash_text: 'Complete the survey first, and your personalized dashboard will appear here.',
+  empty_take_survey: 'Take the survey',
+  empty_welcome_title: 'Welcome to Daily 15',
+  empty_welcome_text: "Take a quick survey and we'll build your personalized dashboard.",
+  empty_get_started: 'Get started',
+  empty_not_started_title: 'Survey not started yet',
+  empty_not_started_text: 'Take the survey first and your dashboard will be built from your answers.',
+  empty_start_survey: 'Start survey',
+  // Error states
+  err_title: 'Something went wrong',
+  err_text: "We couldn't load your dashboard. Check your connection and try again.",
+  err_retry: 'Try again',
+  err_back: 'Back to survey',
+  err_card_kicker: 'Error',
+  err_card_title: "This card couldn't load",
+  err_card_body: 'Something went wrong rendering this section. Other cards are unaffected.',
+  // Check-in banner
+  checkin_done_strong: 'Checked in today',
+  checkin_done_text: " — your dashboard reflects today's priorities. Come back tomorrow.",
+  checkin_pending_strong: 'Daily check-in',
+  checkin_pending_text: ' — 2 minutes to set your priorities for today.',
+  checkin_btn_done: 'Done today',
+  checkin_btn_do: 'Check in',
+  checkin_summary_label: "Today's Check-in",
+  checkin_stress: '⚠️ Stress points',
+  checkin_wins: '✅ Wins',
+  // Loading + aria
+  loading_aria: 'Loading dashboard',
+  aria_metrics: 'Business metrics',
+  aria_pin: 'Pin card',
+  aria_collapse: 'Collapse card',
+};
+
+let _i18n = { ...I18N_DEFAULTS };
+
+function getLang() {
+  return localStorage.getItem('d15_lang') || 'en';
+}
+
+function t(key) {
+  return _i18n[key] !== undefined ? _i18n[key] : (I18N_DEFAULTS[key] || key);
+}
+
+async function fetchI18n(lang) {
+  try {
+    const resp = await fetch(`/api/i18n/${encodeURIComponent(lang)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && typeof data === 'object') {
+        _i18n = { ...I18N_DEFAULTS, ...data };
+      }
+    }
+  } catch (e) {
+    console.warn('i18n fetch failed, using defaults:', e);
+  }
+}
+
+// ── White-label branding ───────────────────────────────────────
+let BRANDING = null;
+
+async function fetchBranding(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const resp = await fetch(`/api/branding/${encodeURIComponent(sessionId)}`);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && typeof data === 'object') {
+        BRANDING = data;
+        applyBranding(data);
+        return data;
+      }
+    }
+  } catch (e) {
+    console.warn('Branding fetch failed:', e);
+  }
+  return null;
+}
+
+function hexToRgba(hex, alpha) {
+  const m = hex.replace('#', '');
+  const full = m.length === 3 ? m.split('').map(c => c + c).join('') : m;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function applyBranding(branding) {
+  if (!branding) return;
+  const root = document.documentElement;
+  if (branding.primary_color) {
+    root.style.setProperty('--accent', branding.primary_color);
+    root.style.setProperty('--accent-soft', hexToRgba(branding.primary_color, 0.06));
+  }
+}
+
 // ── Card data extraction (from survey answers) ─────────────────
 function extractBusinessData(transcript, profile, checkinStatus, businessProfile) {
   const conv = transcript.conversation || [];
@@ -737,7 +886,7 @@ function Card({ kicker, title, priority, children, footer }) {
   return React.createElement('div', { className: `card ${priority ? 'priority' : ''}`, role: 'article', 'aria-label': kicker },
     React.createElement('div', { className: 'card-header' },
       React.createElement('span', { className: 'card-kicker' }, kicker),
-      priority ? React.createElement('span', { className: 'card-priority-badge' }, 'Top of mind') : null
+      priority ? React.createElement('span', { className: 'card-priority-badge' }, t('card_priority')) : null
     ),
     title ? React.createElement('div', { className: 'card-title' }, title) : null,
     React.createElement('div', { className: 'card-body' }, children),
@@ -762,13 +911,13 @@ function EmptyCardState({ message, buttonLabel, onClick }) {
 const CARDS = {
   sales: (config, priority) => {
     return Card({
-      kicker: 'Sales',
-      title: 'Today at a glance',
+      kicker: t('kicker_sales'),
+      title: t('title_sales'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect your POS system',
-          buttonLabel: 'Connect POS',
+          message: t('empty_sales'),
+          buttonLabel: t('btn_sales'),
         }),
       ],
     });
@@ -776,13 +925,13 @@ const CARDS = {
 
   reviews: (config, priority) => {
     return Card({
-      kicker: 'Reviews',
-      title: 'Customer feedback',
+      kicker: t('kicker_reviews'),
+      title: t('title_reviews'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect Google Reviews',
-          buttonLabel: 'Connect Google',
+          message: t('empty_reviews'),
+          buttonLabel: t('btn_reviews'),
         }),
       ],
     });
@@ -790,13 +939,13 @@ const CARDS = {
 
   social: (config, priority) => {
     return Card({
-      kicker: 'Social',
-      title: 'Content queue',
+      kicker: t('kicker_social'),
+      title: t('title_social'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect Instagram',
-          buttonLabel: 'Connect Instagram',
+          message: t('empty_social'),
+          buttonLabel: t('btn_social'),
         }),
       ],
     });
@@ -804,13 +953,13 @@ const CARDS = {
 
   catering: (config, priority) => {
     return Card({
-      kicker: 'Catering',
-      title: 'Pipeline',
+      kicker: t('kicker_catering'),
+      title: t('title_catering'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect your email',
-          buttonLabel: 'Connect Email',
+          message: t('empty_catering'),
+          buttonLabel: t('btn_catering'),
         }),
       ],
     });
@@ -818,13 +967,13 @@ const CARDS = {
 
   inventory: (config, priority) => {
     return Card({
-      kicker: 'Inventory',
-      title: 'Supply schedule',
+      kicker: t('kicker_inventory'),
+      title: t('title_inventory'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Set up delivery schedule',
-          buttonLabel: 'Set Up',
+          message: t('empty_inventory'),
+          buttonLabel: t('btn_inventory'),
         }),
       ],
     });
@@ -832,13 +981,13 @@ const CARDS = {
 
   checklist: (config, priority) => {
     return Card({
-      kicker: 'Daily Checklist',
-      title: 'Your daily tasks',
+      kicker: t('kicker_checklist'),
+      title: t('title_checklist'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Create your checklist',
-          buttonLabel: 'Create',
+          message: t('empty_checklist'),
+          buttonLabel: t('btn_checklist'),
         }),
       ],
     });
@@ -846,13 +995,13 @@ const CARDS = {
 
   goals: (config, priority) => {
     return Card({
-      kicker: 'Goals',
-      title: 'This month',
+      kicker: t('kicker_goals'),
+      title: t('title_goals'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Set your goals',
-          buttonLabel: 'Set Goals',
+          message: t('empty_goals'),
+          buttonLabel: t('btn_goals'),
         }),
       ],
     });
@@ -860,13 +1009,13 @@ const CARDS = {
 
   stress: (config, priority) => {
     return Card({
-      kicker: 'Wellbeing',
-      title: 'How are things today?',
+      kicker: t('kicker_wellbeing'),
+      title: t('title_wellbeing'),
       priority,
       children: [
         EmptyCardState({
-          message: 'How are you feeling?',
-          buttonLabel: 'Check In',
+          message: t('empty_wellbeing'),
+          buttonLabel: t('btn_wellbeing'),
           onClick: () => { window.location.href = '/?session=' + getSessionId(); },
         }),
       ],
@@ -875,13 +1024,13 @@ const CARDS = {
 
   appointments: (config, priority) => {
     return Card({
-      kicker: 'Appointments',
-      title: 'Today\'s schedule',
+      kicker: t('kicker_appointments'),
+      title: t('title_appointments'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect your calendar',
-          buttonLabel: 'Connect Calendar',
+          message: t('empty_appointments'),
+          buttonLabel: t('btn_appointments'),
         }),
       ],
     });
@@ -889,13 +1038,13 @@ const CARDS = {
 
   pipeline: (config, priority) => {
     return Card({
-      kicker: 'Job Pipeline',
-      title: 'Active jobs',
+      kicker: t('kicker_pipeline'),
+      title: t('title_pipeline'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect your job tracker',
-          buttonLabel: 'Connect',
+          message: t('empty_pipeline'),
+          buttonLabel: t('btn_pipeline'),
         }),
       ],
     });
@@ -903,13 +1052,13 @@ const CARDS = {
 
   retention: (config, priority) => {
     return Card({
-      kicker: 'Client Retention',
-      title: 'Customer loyalty',
+      kicker: t('kicker_retention'),
+      title: t('title_retention'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect customer data',
-          buttonLabel: 'Connect',
+          message: t('empty_retention'),
+          buttonLabel: t('btn_retention'),
         }),
       ],
     });
@@ -917,13 +1066,13 @@ const CARDS = {
 
   memberships: (config, priority) => {
     return Card({
-      kicker: 'Memberships',
-      title: 'Active members',
+      kicker: t('kicker_memberships'),
+      title: t('title_memberships'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect membership system',
-          buttonLabel: 'Connect',
+          message: t('empty_memberships'),
+          buttonLabel: t('btn_memberships'),
         }),
       ],
     });
@@ -931,13 +1080,13 @@ const CARDS = {
 
   routes: (config, priority) => {
     return Card({
-      kicker: 'Daily Route',
-      title: 'Delivery stops',
+      kicker: t('kicker_routes'),
+      title: t('title_routes'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Set up your routes',
-          buttonLabel: 'Set Up',
+          message: t('empty_routes'),
+          buttonLabel: t('btn_routes'),
         }),
       ],
     });
@@ -945,13 +1094,13 @@ const CARDS = {
 
   equipment: (config, priority) => {
     return Card({
-      kicker: 'Equipment',
-      title: 'Maintenance status',
+      kicker: t('kicker_equipment'),
+      title: t('title_equipment'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Log your equipment',
-          buttonLabel: 'Add Equipment',
+          message: t('empty_equipment'),
+          buttonLabel: t('btn_equipment'),
         }),
       ],
     });
@@ -959,13 +1108,13 @@ const CARDS = {
 
   invoices: (config, priority) => {
     return Card({
-      kicker: 'Invoices',
-      title: 'Billing overview',
+      kicker: t('kicker_invoices'),
+      title: t('title_invoices'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect your invoicing',
-          buttonLabel: 'Connect',
+          message: t('empty_invoices'),
+          buttonLabel: t('btn_invoices'),
         }),
       ],
     });
@@ -973,13 +1122,13 @@ const CARDS = {
 
   staff: (config, priority) => {
     return Card({
-      kicker: 'Staff',
-      title: 'Your team',
+      kicker: t('kicker_staff'),
+      title: t('title_staff'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Add your staff',
-          buttonLabel: 'Add Staff',
+          message: t('empty_staff'),
+          buttonLabel: t('btn_staff'),
         }),
       ],
     });
@@ -987,13 +1136,13 @@ const CARDS = {
 
   expenses: (config, priority) => {
     return Card({
-      kicker: 'Expenses',
-      title: 'Monthly spending',
+      kicker: t('kicker_expenses'),
+      title: t('title_expenses'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Connect your expenses',
-          buttonLabel: 'Connect',
+          message: t('empty_expenses'),
+          buttonLabel: t('btn_expenses'),
         }),
       ],
     });
@@ -1001,13 +1150,13 @@ const CARDS = {
 
   contacts: (config, priority) => {
     return Card({
-      kicker: 'Contacts',
-      title: 'Your network',
+      kicker: t('kicker_contacts'),
+      title: t('title_contacts'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Import contacts',
-          buttonLabel: 'Import',
+          message: t('empty_contacts'),
+          buttonLabel: t('btn_contacts'),
         }),
       ],
     });
@@ -1015,13 +1164,13 @@ const CARDS = {
 
   decisions: (config, priority) => {
     return Card({
-      kicker: 'Decision Log',
-      title: 'Pending decisions',
+      kicker: t('kicker_decisions'),
+      title: t('title_decisions'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Log your first decision',
-          buttonLabel: 'Get Started',
+          message: t('empty_decisions'),
+          buttonLabel: t('btn_decisions'),
         }),
       ],
     });
@@ -1029,13 +1178,13 @@ const CARDS = {
 
   staff_schedule: (config, priority) => {
     return Card({
-      kicker: 'Staff Schedule',
-      title: 'Today\'s shifts',
+      kicker: t('kicker_staff_schedule'),
+      title: t('title_staff_schedule'),
       priority,
       children: [
         EmptyCardState({
-          message: 'Set up scheduling',
-          buttonLabel: 'Set Up',
+          message: t('empty_staff_schedule'),
+          buttonLabel: t('btn_staff_schedule'),
         }),
       ],
     });
@@ -1053,28 +1202,36 @@ function App({ data, sessionId }) {
           React.createElement('span'), React.createElement('span')
         )
       ),
-      React.createElement('div', { className: 'empty-title' }, 'No dashboard yet'),
-      React.createElement('div', { className: 'empty-text' }, 'Complete the survey first, and your personalized dashboard will appear here.'),
-      React.createElement('a', { href: '/?session=' + sessionId, className: 'card-action primary', style: { textDecoration: 'none', marginTop: '8px' } }, 'Take the survey'),
+      React.createElement('div', { className: 'empty-title' }, t('empty_no_dash_title')),
+      React.createElement('div', { className: 'empty-text' }, t('empty_no_dash_text')),
+      React.createElement('a', { href: '/?session=' + sessionId, className: 'card-action primary', style: { textDecoration: 'none', marginTop: '8px' } }, t('empty_take_survey')),
     );
   }
 
   const now = new Date();
-  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const lang = getLang();
+  const dateStr = now.toLocaleDateString(lang === 'en' ? 'en-US' : lang, { weekday: 'long', month: 'long', day: 'numeric' });
   const mode = data.hasCheckinToday ? 'checkin' : 'onboarding';
+  const brandedTitle = (BRANDING && BRANDING.business_name) ? BRANDING.business_name : t('header_title');
 
-  return React.createElement('div', { role: 'main', 'aria-label': 'Daily 15 Dashboard' },
+  return React.createElement('div', { role: 'main', 'aria-label': t('header_dashboard_aria') },
     // Header
     React.createElement('div', { className: 'header' },
       React.createElement('div', { className: 'header-brand' },
-        React.createElement('div', { className: 'brand-mark' }, 'D15'),
+        (BRANDING && BRANDING.logo_url)
+          ? React.createElement('img', {
+              src: BRANDING.logo_url,
+              alt: brandedTitle,
+              style: { width: '40px', height: '40px', borderRadius: '12px', objectFit: 'cover' }
+            })
+          : React.createElement('div', { className: 'brand-mark' }, 'D15'),
         React.createElement('div', null,
-          React.createElement('div', { className: 'header-title' }, 'Daily 15'),
+          React.createElement('div', { className: 'header-title' }, brandedTitle),
           React.createElement('div', { className: 'header-sub' }, data.businessName || 'Your Business'),
         )
       ),
       React.createElement('div', { className: 'header-right' },
-        React.createElement('span', { className: `mode-pill ${mode}` }, mode === 'checkin' ? 'Daily Check-in' : 'Onboarding'),
+        React.createElement('span', { className: `mode-pill ${mode}` }, mode === 'checkin' ? t('mode_checkin') : t('mode_onboarding')),
         React.createElement('div', { className: 'header-date' }, dateStr)
       )
     ),
@@ -1084,7 +1241,7 @@ function App({ data, sessionId }) {
       ? React.createElement('div', { className: 'checkin-summary-banner', role: 'alert', 'aria-live': 'polite' },
           React.createElement('span', { className: 'checkin-summary-icon' }, '📋'),
           React.createElement('div', { className: 'checkin-summary-text' },
-            React.createElement('span', { className: 'label' }, 'Today\'s Check-in'),
+            React.createElement('span', { className: 'label' }, t('checkin_summary_label')),
             data.checkinSummary
           )
         )
@@ -1094,15 +1251,15 @@ function App({ data, sessionId }) {
     React.createElement('div', { className: 'checkin-banner', role: 'alert', 'aria-live': 'polite' },
       React.createElement('div', { className: 'checkin-banner-text' },
         data.hasCheckinToday
-          ? [React.createElement('strong', null, 'Checked in today'), ' — your dashboard reflects today\'s priorities. Come back tomorrow.']
-          : [React.createElement('strong', null, 'Daily check-in'), ' — 2 minutes to set your priorities for today.']
+          ? [React.createElement('strong', null, t('checkin_done_strong')), t('checkin_done_text')]
+          : [React.createElement('strong', null, t('checkin_pending_strong')), t('checkin_pending_text')]
       ),
       React.createElement('button', {
         className: 'checkin-btn',
         onClick: () => { window.location.href = '/?session=' + sessionId; },
         style: data.hasCheckinToday ? { opacity: '0.5', cursor: 'default' } : {},
-        'aria-label': data.hasCheckinToday ? 'Check-in already completed today' : 'Start daily check-in'
-      }, data.hasCheckinToday ? 'Done today' : 'Check in'),
+        'aria-label': data.hasCheckinToday ? t('checkin_btn_done') : t('checkin_btn_do')
+      }, data.hasCheckinToday ? t('checkin_btn_done') : t('checkin_btn_do')),
     ),
 
     // Stress points & wins pills (when check-in data exists)
@@ -1110,7 +1267,7 @@ function App({ data, sessionId }) {
       ? React.createElement('div', { className: 'checkin-pills-section' },
           data.stressPoints.length > 0
             ? React.createElement('div', { className: 'pills-group' },
-                React.createElement('span', { className: 'pills-group-label' }, '⚠️ Stress points'),
+                React.createElement('span', { className: 'pills-group-label' }, t('checkin_stress')),
                 React.createElement('div', { className: 'pills-row' },
                   data.stressPoints.map((s, i) =>
                     React.createElement('span', { key: i, className: 'stress-pill' }, s)
@@ -1120,7 +1277,7 @@ function App({ data, sessionId }) {
             : null,
           data.wins.length > 0
             ? React.createElement('div', { className: 'pills-group' },
-                React.createElement('span', { className: 'pills-group-label' }, '✅ Wins'),
+                React.createElement('span', { className: 'pills-group-label' }, t('checkin_wins')),
                 React.createElement('div', { className: 'pills-row' },
                   data.wins.map((w, i) =>
                     React.createElement('span', { key: i, className: 'win-pill' }, w)
@@ -1132,7 +1289,7 @@ function App({ data, sessionId }) {
       : null,
 
     // Card grid — each card wrapped in try/catch for error isolation
-    React.createElement('div', { className: 'card-grid', role: 'region', 'aria-label': 'Business metrics' },
+    React.createElement('div', { className: 'card-grid', role: 'region', 'aria-label': t('aria_metrics') },
       data.cards.map((cardSpec, i) => {
         const cardFn = CARDS[cardSpec.id];
         if (!cardFn) return null;
@@ -1151,7 +1308,7 @@ function App({ data, sessionId }) {
 // ── Init ────────────────────────────────────────────────────────
 
 function renderSkeletonLoading() {
-  return React.createElement('div', { role: 'status', 'aria-live': 'polite', 'aria-label': 'Loading dashboard' },
+  return React.createElement('div', { role: 'status', 'aria-live': 'polite', 'aria-label': t('loading_aria') },
     React.createElement('div', { className: 'header' },
       React.createElement('div', { className: 'header-brand' },
         React.createElement('div', { className: 'brand-mark' }, 'D15'),
@@ -1187,10 +1344,10 @@ function renderErrorState(app, sessionId, retryFn) {
   mount(
     React.createElement('div', { className: 'error-state', role: 'alert' },
       React.createElement('div', { className: 'error-icon' }, '⚠️'),
-      React.createElement('div', { className: 'error-title' }, 'Something went wrong'),
-      React.createElement('div', { className: 'error-text' }, 'We couldn\'t load your dashboard. Check your connection and try again.'),
-      React.createElement('button', { className: 'retry-btn', onClick: retryFn, 'aria-label': 'Retry loading the dashboard' }, 'Try again'),
-      React.createElement('a', { href: '/', style: { fontSize: '13px', color: 'var(--text-muted)', marginTop: '8px', textDecoration: 'none' } }, 'Back to survey'),
+      React.createElement('div', { className: 'error-title' }, t('err_title')),
+      React.createElement('div', { className: 'error-text' }, t('err_text')),
+      React.createElement('button', { className: 'retry-btn', onClick: retryFn, 'aria-label': t('err_retry') }, t('err_retry')),
+      React.createElement('a', { href: '/', style: { fontSize: '13px', color: 'var(--text-muted)', marginTop: '8px', textDecoration: 'none' } }, t('err_back')),
     ),
     app
   );
@@ -1198,9 +1355,9 @@ function renderErrorState(app, sessionId, retryFn) {
 
 function renderCardError(cardId) {
   return React.createElement('div', { className: 'card-error-fallback' },
-    React.createElement('span', { className: 'card-kicker' }, 'Error'),
-    React.createElement('div', { className: 'card-title', style: { fontSize: '15px' } }, 'This card couldn\'t load'),
-    React.createElement('div', { className: 'card-body' }, 'Something went wrong rendering this section. Other cards are unaffected.'),
+    React.createElement('span', { className: 'card-kicker' }, t('err_card_kicker')),
+    React.createElement('div', { className: 'card-title', style: { fontSize: '15px' } }, t('err_card_title')),
+    React.createElement('div', { className: 'card-body' }, t('err_card_body')),
   );
 }
 
@@ -1211,6 +1368,14 @@ async function init() {
   mount(renderSkeletonLoading(), app);
 
   const sessionId = getSessionId();
+
+  // Fetch i18n translations and branding in parallel before rendering
+  const lang = getLang();
+  await Promise.all([
+    fetchI18n(lang),
+    fetchBranding(sessionId),
+  ]);
+
   if (!sessionId) {
     mount(
       React.createElement('div', { className: 'empty' },
@@ -1220,10 +1385,10 @@ async function init() {
             React.createElement('span'), React.createElement('span')
           )
         ),
-        React.createElement('div', { className: 'empty-title' }, 'Welcome to Daily 15'),
-        React.createElement('div', { className: 'empty-text' }, 'Take a quick survey and we\'ll build your personalized dashboard.'),
+        React.createElement('div', { className: 'empty-title' }, t('empty_welcome_title')),
+        React.createElement('div', { className: 'empty-text' }, t('empty_welcome_text')),
         React.createElement('a', { href: '/', style: { textDecoration: 'none' } },
-          React.createElement('button', { className: 'card-action primary', 'aria-label': 'Get started with Daily 15 survey' }, 'Get started')
+          React.createElement('button', { className: 'card-action primary', 'aria-label': t('empty_get_started') }, t('empty_get_started'))
         )
       ),
       app
@@ -1244,10 +1409,10 @@ async function init() {
               React.createElement('span'), React.createElement('span')
             )
           ),
-          React.createElement('div', { className: 'empty-title' }, 'Survey not started yet'),
-          React.createElement('div', { className: 'empty-text' }, 'Take the survey first and your dashboard will be built from your answers.'),
+          React.createElement('div', { className: 'empty-title' }, t('empty_not_started_title')),
+          React.createElement('div', { className: 'empty-text' }, t('empty_not_started_text')),
           React.createElement('a', { href: '/?session=' + sessionId, style: { textDecoration: 'none' } },
-            React.createElement('button', { className: 'card-action primary', 'aria-label': 'Start the survey' }, 'Start survey')
+            React.createElement('button', { className: 'card-action primary', 'aria-label': t('empty_start_survey') }, t('empty_start_survey'))
           )
         ),
         app
