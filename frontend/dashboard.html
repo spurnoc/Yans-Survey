@@ -3,6 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Daily 15">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>Daily 15 — Your Business Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1241,6 +1247,50 @@ async function init() {
 }
 
 init();
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('SW registration failed:', e));
+  });
+}
+
+// Install app prompt (mobile)
+let _deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  _deferredPrompt = e;
+  const btn = document.getElementById('d15-install-btn');
+  if (btn) btn.style.display = 'flex';
+});
+window.addEventListener('appinstalled', () => {
+  const btn = document.getElementById('d15-install-btn');
+  if (btn) btn.style.display = 'none';
+  _deferredPrompt = null;
+});
+function _d15Install() {
+  if (!_deferredPrompt) return;
+  _deferredPrompt.prompt();
+  _deferredPrompt.userChoice.then(() => {
+    _deferredPrompt = null;
+    const btn = document.getElementById('d15-install-btn');
+    if (btn) btn.style.display = 'none';
+  });
+}
+(function injectInstallBtn() {
+  const btn = document.createElement('button');
+  btn.id = 'd15-install-btn';
+  btn.style.cssText = [
+    'display:none','position:fixed','bottom:20px','right:20px','z-index:99999',
+    'padding:12px 20px','border:none','border-radius:12px',
+    'background:#0a0a0a','color:#f5f3f0','font-family:Inter,system-ui,sans-serif',
+    'font-size:14px','font-weight:600','cursor:pointer','box-shadow:0 4px 20px rgba(0,0,0,0.3)',
+    'align-items:center','gap:6px'
+  ].join(';');
+  btn.innerHTML = '↓ Install app';
+  btn.onclick = _d15Install;
+  document.body.appendChild(btn);
+})();
 </script>
 </body>
 </html>

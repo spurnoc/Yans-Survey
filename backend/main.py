@@ -44,7 +44,12 @@ except ImportError:
 async def lifespan(app):
     """Application lifespan: initialize the database on startup."""
     await init_db()
+    # Start the daily check-in reminder background loop (V3-7: retain task ref)
+    reminder_task = asyncio.create_task(_send_reminder_loop())
+    _background_tasks.add(reminder_task)
+    reminder_task.add_done_callback(_background_tasks.discard)
     yield
+    reminder_task.cancel()
 
 app = FastAPI(title="SPUR Survey", lifespan=lifespan)
 
@@ -413,6 +418,19 @@ async def init_db():
         if "duplicate column" not in str(e).lower():
             raise
         logger.debug("init_db: survey_sessions.user_id column already exists: %s", e)
+
+    # ── Daily check-in reminders ────────────────────────────────────
+    await _turso_execute("""
+    CREATE TABLE IF NOT EXISTS reminder_settings (
+        user_id TEXT PRIMARY KEY,
+        email TEXT,
+        phone TEXT,
+        reminder_time TEXT DEFAULT '08:00',
+        enabled INTEGER DEFAULT 1,
+        last_sent_date TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now'))
+    )
+    """)
 
 
 async def _load_session(session_id: str) -> dict | None:
@@ -1958,6 +1976,195 @@ async def list_profiles():
     )
     profiles = [{"session_id": r["session_id"], "size_bytes": r["size"], "modified": r["updated_at"]} for r in rows]
     return {"profiles": profiles}
+
+
+# ── Daily check-in reminder system ────────────────────────────────
+class ReminderSettingsRequest(BaseModel):
+    email: str
+    phone: str = ""
+    reminder_time: str = "08:00"
+    enabled: bool = True
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or "@" not in v or "." not in v:
+            raise ValueError("A valid email address is required")
+        if len(v) > 254:
+            raise ValueError("Email must be 254 characters or fewer")
+        return v
+
+    @field_validator("reminder_time")
+    @classmethod
+    def validate_time(cls, v: str) -> str:
+        v = v.strip()
+        # Accept HH:MM format (24-hour)
+        if not re.match(r"^\d{2}:\d{2}$", v):
+            raise ValueError("reminder_time must be in HH:MM format (e.g. '08:00')")
+        hh, mm = v.split(":")
+        if not (0 <= int(hh) <= 23) or not (0 <= int(mm) <= 59):
+            raise ValueError("reminder_time must be a valid time")
+        return v
+
+
+async def _get_reminder_settings(user_id: str) -> dict | None:
+    """Load reminder settings for a user. Returns dict or None."""
+    try:
+        rows = await _turso_query(
+            "SELECT * FROM reminder_settings WHERE user_id=?",
+            [{"type": "text", "value": user_id}]
+        )
+        if rows:
+            return rows[0]
+    except Exception as e:
+        logger.debug("_get_reminder_settings failed: %s", e)
+    return None
+
+
+async def _save_reminder_settings(user_id: str, email: str, phone: str, reminder_time: str, enabled: bool):
+    """Insert or update reminder settings for a user."""
+    await _turso_execute(
+        """INSERT OR REPLACE INTO reminder_settings (user_id, email, phone, reminder_time, enabled, last_sent_date, created_at)
+           VALUES (?, ?, ?, ?, ?, COALESCE((SELECT last_sent_date FROM reminder_settings WHERE user_id=?), ''), COALESCE((SELECT created_at FROM reminder_settings WHERE user_id=?), datetime('now')))""",
+        [
+            {"type": "text", "value": user_id},
+            {"type": "text", "value": email},
+            {"type": "text", "value": phone},
+            {"type": "text", "value": reminder_time},
+            {"type": "integer", "value": "1" if enabled else "0"},
+            {"type": "text", "value": user_id},
+            {"type": "text", "value": user_id},
+        ]
+    )
+
+
+async def _send_checkin_reminder(user_id: str, email: str):
+    """Send a daily check-in reminder email. Best-effort, non-blocking."""
+    if not email or not SMTP_USER:
+        logger.info("Reminder email skipped — email or SMTP_USER not configured for user %s", user_id)
+        return
+    try:
+        # Try to find the user's survey session to include a summary of their last check-in
+        summary_line = ""
+        sess_rows = await _turso_query(
+            "SELECT session_id FROM survey_sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
+            [{"type": "text", "value": user_id}]
+        )
+        if sess_rows and sess_rows[0].get("session_id"):
+            last_checkin = await _get_latest_checkin(sess_rows[0]["session_id"])
+            if last_checkin and last_checkin.get("summary"):
+                summary_line = f"\n\nLast check-in summary: {last_checkin['summary']}"
+
+        body = (
+            "Good morning! Take 2 minutes to check in: https://daily15.spurnoc.com"
+            f"{summary_line}\n\n— The Daily 15 Team"
+        )
+
+        msg = MIMEMultipart()
+        msg["From"] = SMTP_USER
+        msg["To"] = email
+        msg["Subject"] = "Your Daily 15 check-in is ready"
+        msg.attach(MIMEText(body, "plain"))
+
+        await asyncio.to_thread(_send_email_to_sync, msg, email)
+        logger.info("Reminder email sent to %s for user %s", email, user_id)
+    except Exception as e:
+        logger.debug("_send_checkin_reminder failed for user %s: %s", user_id, e)
+
+
+def _send_email_to_sync(msg: MIMEMultipart, to_email: str):
+    """Synchronous SMTP send helper for reminder emails (called via asyncio.to_thread)."""
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, [to_email], msg.as_string())
+
+
+async def _send_reminder_loop():
+    """Background loop: every 60s, check if any user's reminder_time matches
+    the current time (HH:MM) and send a reminder email. Uses last_sent_date
+    to avoid double-sending within the same day.
+    """
+    logger.info("Daily check-in reminder loop started")
+    while True:
+        try:
+            now = datetime.now(timezone.utc).astimezone()
+            current_hhmm = now.strftime("%H:%M")
+            today = now.strftime("%Y-%m-%d")
+
+            # Query all enabled reminder settings where reminder_time matches current HH:MM
+            rows = await _turso_query(
+                "SELECT user_id, email, phone, reminder_time, last_sent_date FROM reminder_settings WHERE enabled=1 AND reminder_time=?",
+                [{"type": "text", "value": current_hhmm}]
+            )
+
+            for row in rows:
+                # Skip if already sent today
+                if row.get("last_sent_date") == today:
+                    continue
+                user_id = row.get("user_id")
+                email = row.get("email") or ""
+                if not email:
+                    continue
+                # Send reminder (fire-and-forget, best-effort)
+                try:
+                    await _send_checkin_reminder(user_id, email)
+                    # Mark as sent for today
+                    await _turso_execute(
+                        "UPDATE reminder_settings SET last_sent_date=? WHERE user_id=?",
+                        [
+                            {"type": "text", "value": today},
+                            {"type": "text", "value": user_id},
+                        ]
+                    )
+                except Exception as e:
+                    logger.debug("Reminder loop: failed to send to %s: %s", email, e)
+
+        except Exception as e:
+            logger.debug("_send_reminder_loop iteration error: %s", e)
+
+        await asyncio.sleep(60)
+
+
+@app.post("/api/reminder/settings")
+async def save_reminder_settings(req: ReminderSettingsRequest, user: dict = Depends(_auth_dependency)):
+    """Save reminder settings (email, phone, time, enabled) for the authenticated user."""
+    await _save_reminder_settings(
+        user["user_id"],
+        req.email,
+        req.phone,
+        req.reminder_time,
+        req.enabled,
+    )
+    return {
+        "status": "ok",
+        "settings": {
+            "email": req.email,
+            "phone": req.phone,
+            "reminder_time": req.reminder_time,
+            "enabled": req.enabled,
+        },
+    }
+
+
+@app.get("/api/reminder/settings")
+async def get_reminder_settings(user: dict = Depends(_auth_dependency)):
+    """Get the current reminder settings for the authenticated user."""
+    settings = await _get_reminder_settings(user["user_id"])
+    if not settings:
+        return {
+            "email": user.get("email", ""),
+            "phone": "",
+            "reminder_time": "08:00",
+            "enabled": False,
+        }
+    return {
+        "email": settings.get("email") or "",
+        "phone": settings.get("phone") or "",
+        "reminder_time": settings.get("reminder_time") or "08:00",
+        "enabled": bool(settings.get("enabled")),
+    }
 
 
 @app.get("/api/health")

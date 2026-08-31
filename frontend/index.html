@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#1a1a1a">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Daily 15">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>Daily 15 — Business Survey</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -383,6 +388,90 @@ textarea{resize:none}
   transition:all .2s;font-weight:500;
 }
 .auth-logout:hover{background:var(--warm-faint);color:var(--warm-dark)}
+
+/* ── Reminder settings ─────────────────────────────────── */
+.reminder-section{
+  margin-top:24px;padding:20px;
+  background:var(--cream-light);
+  border:1px solid var(--warm-border);
+  border-radius:var(--radius);
+}
+.reminder-section h3{
+  font-size:14px;font-weight:600;margin-bottom:4px;
+}
+.reminder-section p.reminder-desc{
+  font-size:12px;color:var(--warm-muted);margin-bottom:14px;
+}
+.reminder-fields{
+  display:flex;flex-direction:column;gap:10px;
+}
+.reminder-field-row{
+  display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+}
+.reminder-field-row input[type="email"],
+.reminder-field-row input[type="text"]{
+  flex:1;min-width:0;padding:10px 12px;
+  background:var(--cream-bg);border:1px solid var(--warm-border);
+  border-radius:var(--radius);font-size:13px;color:var(--warm-dark);
+  transition:border-color .2s;
+}
+.reminder-field-row input:focus{border-color:var(--accent)}
+.reminder-field-row input::placeholder{color:rgba(26,26,26,0.3)}
+.reminder-time-input{
+  width:90px;flex:0 0 auto;padding:10px 12px;
+  background:var(--cream-bg);border:1px solid var(--warm-border);
+  border-radius:var(--radius);font-size:13px;color:var(--warm-dark);
+}
+.reminder-toggle-row{
+  display:flex;align-items:center;justify-content:space-between;
+  margin-top:10px;
+}
+.reminder-toggle-label{
+  font-size:13px;font-weight:500;
+}
+.toggle-switch{
+  position:relative;width:42px;height:24px;
+  background:var(--warm-border);border-radius:12px;
+  cursor:pointer;transition:background .2s;flex-shrink:0;
+}
+.toggle-switch.on{background:var(--accent)}
+.toggle-switch::after{
+  content:'';position:absolute;top:3px;left:3px;
+  width:18px;height:18px;border-radius:50%;
+  background:var(--cream-light);transition:transform .2s;
+}
+.toggle-switch.on::after{transform:translateX(18px)}
+.reminder-save-btn{
+  margin-top:12px;padding:10px 20px;
+  background:var(--warm-dark);color:var(--cream-bg);
+  border-radius:var(--radius);font-size:13px;font-weight:600;
+  transition:all .2s;
+}
+.reminder-save-btn:hover{background:var(--accent)}
+.reminder-save-btn:disabled{opacity:0.5;cursor:not-allowed}
+.reminder-status{
+  font-size:12px;margin-top:8px;display:none;
+}
+.reminder-status.show{display:block;animation:fadeIn .3s}
+.reminder-status.success{color:#2d8a4e}
+.reminder-status.error{color:var(--accent)}
+.settings-modal{
+  position:fixed;inset:0;z-index:900;
+  display:none;align-items:center;justify-content:center;
+  background:rgba(0,0,0,0.3);animation:fadeIn .2s;
+}
+.settings-modal.show{display:flex}
+.settings-card{
+  width:100%;max-width:420px;
+  padding:32px 28px;background:var(--cream-light);
+  border:1px solid var(--warm-border);border-radius:var(--radius-lg);
+  box-shadow:0 4px 30px rgba(0,0,0,0.08);
+}
+.settings-close{
+  float:right;font-size:20px;color:var(--warm-muted);
+  cursor:pointer;line-height:1;transition:color .2s;
+}
+.settings-close:hover{color:var(--warm-dark)}
 </style>
 </head>
 <body>
@@ -423,6 +512,7 @@ textarea{resize:none}
     </div>
     <div style="display:flex;align-items:center;gap:8px">
       <span class="mode-pill onboarding" id="mode-pill">Onboarding</span>
+      <div class="reset-btn" onclick="openSettingsModal()" role="button" aria-label="Reminder settings" tabindex="0">Settings</div>
       <div class="reset-btn" onclick="resetSurvey()" role="button" aria-label="Reset survey" tabindex="0">Reset</div>
       <div class="auth-logout" onclick="logout()" role="button" aria-label="Log out" tabindex="0">Logout</div>
     </div>
@@ -435,6 +525,29 @@ textarea{resize:none}
   </div>
 
   <div class="input-area" id="input-area"></div>
+</div>
+
+<!-- Settings modal — reminder settings accessible from header -->
+<div class="settings-modal" id="settings-modal">
+  <div class="settings-card">
+    <span class="settings-close" onclick="closeSettingsModal()" role="button" aria-label="Close settings">×</span>
+    <h3 style="font-family:'Instrument Serif',serif;font-size:20px;margin-bottom:4px">Daily Reminders</h3>
+    <p style="font-size:12px;color:var(--warm-muted);margin-bottom:18px">Get a daily email reminder to check in.</p>
+    <div class="reminder-fields">
+      <div class="reminder-field-row">
+        <input type="email" id="settings-reminder-email" placeholder="you@example.com" autocomplete="email">
+      </div>
+      <div class="reminder-field-row">
+        <input type="time" id="settings-reminder-time" class="reminder-time-input" value="08:00">
+      </div>
+      <div class="reminder-toggle-row">
+        <span class="reminder-toggle-label">Reminders enabled</span>
+        <div class="toggle-switch" id="settings-reminder-toggle" onclick="toggleReminderSwitch()" role="switch" aria-checked="false" tabindex="0"></div>
+      </div>
+    </div>
+    <button class="reminder-save-btn" id="settings-save-btn" onclick="saveReminderSettings()">Save Settings</button>
+    <div class="reminder-status" id="settings-reminder-status"></div>
+  </div>
 </div>
 
 <script>
@@ -899,6 +1012,74 @@ function showComplete() {
   link.setAttribute('style', 'display:inline-block;margin-top:8px;padding:14px 28px;background:var(--warm-dark);color:var(--cream-bg);border-radius:var(--radius);text-decoration:none;font-weight:600;font-size:14px');
   div.appendChild(link);
 
+  // ── Set up daily reminders section ──
+  const reminder = document.createElement('div');
+  reminder.className = 'reminder-section';
+
+  const rh3 = document.createElement('h3');
+  rh3.textContent = 'Set up daily reminders';
+  reminder.appendChild(rh3);
+
+  const rp = document.createElement('p');
+  rp.className = 'reminder-desc';
+  rp.textContent = 'Get an email reminder to check in each day.';
+  reminder.appendChild(rp);
+
+  const rfields = document.createElement('div');
+  rfields.className = 'reminder-fields';
+
+  const rrow1 = document.createElement('div');
+  rrow1.className = 'reminder-field-row';
+  const remail = document.createElement('input');
+  remail.type = 'email';
+  remail.id = 'complete-reminder-email';
+  remail.placeholder = 'you@example.com';
+  remail.setAttribute('autocomplete', 'email');
+  rrow1.appendChild(remail);
+
+  const rtime = document.createElement('input');
+  rtime.type = 'time';
+  rtime.className = 'reminder-time-input';
+  rtime.id = 'complete-reminder-time';
+  rtime.value = '08:00';
+  rrow1.appendChild(rtime);
+
+  rfields.appendChild(rrow1);
+
+  const rtoggleRow = document.createElement('div');
+  rtoggleRow.className = 'reminder-toggle-row';
+  const rtoggleLabel = document.createElement('span');
+  rtoggleLabel.className = 'reminder-toggle-label';
+  rtoggleLabel.textContent = 'Reminders enabled';
+  const rtoggle = document.createElement('div');
+  rtoggle.className = 'toggle-switch on';
+  rtoggle.id = 'complete-reminder-toggle';
+  rtoggle.setAttribute('role', 'switch');
+  rtoggle.setAttribute('aria-checked', 'true');
+  rtoggle.setAttribute('tabindex', '0');
+  rtoggle.onclick = () => {
+    rtoggle.classList.toggle('on');
+    rtoggle.setAttribute('aria-checked', rtoggle.classList.contains('on') ? 'true' : 'false');
+  };
+  rtoggleRow.appendChild(rtoggleLabel);
+  rtoggleRow.appendChild(rtoggle);
+  rfields.appendChild(rtoggleRow);
+
+  reminder.appendChild(rfields);
+
+  const rbtn = document.createElement('button');
+  rbtn.className = 'reminder-save-btn';
+  rbtn.textContent = 'Save Reminder Settings';
+  rbtn.onclick = () => saveReminderSettings('complete');
+  reminder.appendChild(rbtn);
+
+  const rstatus = document.createElement('div');
+  rstatus.className = 'reminder-status';
+  rstatus.id = 'complete-reminder-status';
+  reminder.appendChild(rstatus);
+
+  div.appendChild(reminder);
+
   const toggle = document.createElement('div');
   toggle.className = 'transcript-toggle';
   toggle.textContent = 'View full transcript';
@@ -1148,6 +1329,110 @@ function toggleTranscript() {
 function escapeHtml(str) {
   if (!str) return '';
   return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[ch]));
+}
+
+// ── Reminder settings management ───────────────────────────────
+const REMINDER_API = '/api/reminder';
+
+// Settings modal controls
+function openSettingsModal() {
+  document.getElementById('settings-modal').classList.add('show');
+  loadReminderSettings('settings');
+}
+
+function closeSettingsModal() {
+  document.getElementById('settings-modal').classList.remove('show');
+}
+
+// Close settings modal when clicking the backdrop
+document.addEventListener('click', (e) => {
+  const modal = document.getElementById('settings-modal');
+  if (e.target === modal) closeSettingsModal();
+});
+
+// Toggle the reminder switch in the settings modal
+function toggleReminderSwitch() {
+  const sw = document.getElementById('settings-reminder-toggle');
+  sw.classList.toggle('on');
+  sw.setAttribute('aria-checked', sw.classList.contains('on') ? 'true' : 'false');
+}
+
+// Load existing reminder settings from the server
+async function loadReminderSettings(prefix) {
+  try {
+    const resp = await fetchWithTimeout(`${REMINDER_API}/settings`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const emailEl = document.getElementById(`${prefix}-reminder-email`);
+    const timeEl = document.getElementById(`${prefix}-reminder-time`);
+    const toggleEl = document.getElementById(`${prefix}-reminder-toggle`);
+    if (emailEl && data.email) emailEl.value = data.email;
+    if (timeEl && data.reminder_time) timeEl.value = data.reminder_time;
+    if (toggleEl) {
+      if (data.enabled) {
+        toggleEl.classList.add('on');
+        toggleEl.setAttribute('aria-checked', 'true');
+      } else {
+        toggleEl.classList.remove('on');
+        toggleEl.setAttribute('aria-checked', 'false');
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load reminder settings:', e);
+  }
+}
+
+// Save reminder settings — works for both the settings modal and the post-survey form
+async function saveReminderSettings(prefix) {
+  const emailEl = document.getElementById(`${prefix}-reminder-email`);
+  const timeEl = document.getElementById(`${prefix}-reminder-time`);
+  const toggleEl = document.getElementById(`${prefix}-reminder-toggle`);
+  const statusEl = document.getElementById(`${prefix}-reminder-status`);
+  const btnEl = prefix === 'settings' ? document.getElementById('settings-save-btn') : null;
+
+  const email = emailEl ? emailEl.value.trim() : '';
+  const reminder_time = timeEl ? timeEl.value : '08:00';
+  const enabled = toggleEl ? toggleEl.classList.contains('on') : true;
+
+  if (!email) {
+    showReminderStatus(statusEl, 'Please enter an email address.', 'error');
+    return;
+  }
+
+  if (btnEl) btnEl.disabled = true;
+
+  try {
+    const resp = await fetchWithTimeout(`${REMINDER_API}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, reminder_time, enabled }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      showReminderStatus(statusEl, err.detail || 'Failed to save settings.', 'error');
+      return;
+    }
+
+    showReminderStatus(statusEl, 'Reminder settings saved! You\'ll get a daily email at ' + reminder_time + '.', 'success');
+  } catch (e) {
+    showReminderStatus(statusEl, 'Network error. Please try again.', 'error');
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+function showReminderStatus(el, message, type) {
+  if (!el) return;
+  el.textContent = message;
+  el.className = `reminder-status show ${type}`;
+}
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('SW registration failed:', e));
+  });
 }
 </script>
 </body>
