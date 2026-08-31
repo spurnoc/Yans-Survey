@@ -930,12 +930,6 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
     Implements the reasoning-model fallback: if streaming yields no
     ``content`` deltas (some models only emit ``reasoning``), retries
     as a non-streaming request and emits the full text in 3-char chunks.
-
-    Returns the full assembled response text via the ``StopAsyncIteration``
-    value (accessible as the ``.value`` of the raised ``StopAsyncIteration``
-    when iterated with the low-level protocol). Callers using
-    ``async for`` will instead receive a final sentinel line:
-    ``data: {"_full_response": "<text>"}\\n\\n``.
     """
     full_response = ""
 
@@ -1050,13 +1044,10 @@ async def chat(req: ChatRequest):
         # Stream the LLM response via the shared helper
         gen = _stream_llm_response(messages, SURVEY_MODEL, max_tokens=1200)
         full_response = ""
-        try:
-            async for chunk in gen:
-                if chunk.startswith("data: {") and '"content"' in chunk:
-                    full_response += json.loads(chunk[6:])["content"]
-                yield chunk
-        except StopAsyncIteration:
-            pass
+        async for chunk in gen:
+            if chunk.startswith("data: {") and '"content"' in chunk:
+                full_response += json.loads(chunk[6:])["content"]
+            yield chunk
 
         # Parse choices from the response
         clean_text, choices = _parse_response(full_response)
@@ -1243,7 +1234,7 @@ async def _run_checkin_analysis(session_id: str, conversation: list):
                     "You analyze a daily check-in conversation with a small business owner. "
                     "Extract: stress_points (things worrying them), wins (things going well), "
                     "priorities (card IDs to surface, in order of importance), and a one-sentence summary. "
-                    "Available card IDs: sales, reviews, social, catering, inventory, checklist, goals, stress. "
+                    "Available card IDs: " + ", ".join(c["id"] for c in AVAILABLE_CARDS) + ". "
                     "Respond as JSON: {\"stress_points\": [...], \"wins\": [...], \"priorities\": [...], \"summary\": \"one sentence here\"} "
                     "Only include priorities that are relevant to what they said. "
                     "If nothing stressed them, stress_points is empty. If no wins, wins is empty. "
@@ -1333,13 +1324,16 @@ async def checkin_chat(req: ChatRequest):
         conv = checkin_chat._conversations[checkin_key]
         conv["messages"].append({"role": "user", "content": req.answer})
         conv["step"] += 1
+        # Copy to locals so we don't read conv fields after releasing the lock
+        conv_messages = list(conv["messages"])  # shallow copy
+        conv_step = conv["step"]
 
     # ── Lock released: build prompt + stream LLM without holding it ──
-    system_prompt = await _build_checkin_prompt(req.session_id, conv["messages"], conv["step"])
+    system_prompt = await _build_checkin_prompt(req.session_id, conv_messages, conv_step)
     messages = [{"role": "system", "content": system_prompt}]
 
     # Send last 4 messages of the check-in conversation
-    _append_recent_context(messages, conv["messages"], window=4)
+    _append_recent_context(messages, conv_messages, window=4)
 
     # Tell the AI to react + ask the next check-in question
     messages.append({"role": "user", "content": (
@@ -1352,13 +1346,10 @@ async def checkin_chat(req: ChatRequest):
         # Stream the LLM response via the shared helper
         gen = _stream_llm_response(messages, SURVEY_MODEL, max_tokens=800)
         full_response = ""
-        try:
-            async for chunk in gen:
-                if chunk.startswith("data: {") and '"content"' in chunk:
-                    full_response += json.loads(chunk[6:])["content"]
-                yield chunk
-        except StopAsyncIteration:
-            pass
+        async for chunk in gen:
+            if chunk.startswith("data: {") and '"content"' in chunk:
+                full_response += json.loads(chunk[6:])["content"]
+            yield chunk
 
         # Add AI response to conversation
         async with _checkin_lock:
@@ -1447,6 +1438,7 @@ async def get_transcript(session_id: str):
 
 @app.post("/api/survey/reset")
 async def reset(session_id: str):
+    session_id = _validate_session_id_param(session_id)
     await _reset_session(session_id)
     return {"status": "ok", "message": "Survey reset."}
 

@@ -497,11 +497,17 @@ function getSessionId() {
 }
 
 async function fetchData(sessionId) {
+  const timeout = 30000;
+  const controller = () => {
+    const c = new AbortController();
+    setTimeout(() => c.abort(), timeout);
+    return c.signal;
+  };
   const [transcriptResp, profileResp, checkinStatusResp, businessProfileResp] = await Promise.all([
-    fetch(`${API}/transcript?session_id=${sessionId}`).then(r => r.json()),
-    fetch(`${API}/profile/${sessionId}`).then(r => r.ok ? r.text() : ''),
-    fetch(`${API}/checkin/status?session_id=${sessionId}`).then(r => r.json()),
-    fetch(`${API}/business-profile/${sessionId}`).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`${API}/transcript?session_id=${sessionId}`, { signal: controller() }).then(r => r.json()),
+    fetch(`${API}/profile/${sessionId}`, { signal: controller() }).then(r => r.ok ? r.text() : ''),
+    fetch(`${API}/checkin/status?session_id=${sessionId}`, { signal: controller() }).then(r => r.json()),
+    fetch(`${API}/business-profile/${sessionId}`, { signal: controller() }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   return {
     transcript: transcriptResp,
