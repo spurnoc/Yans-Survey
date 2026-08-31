@@ -184,6 +184,22 @@ body{
   display:grid;gap:16px;
   grid-template-columns:repeat(auto-fill,minmax(340px,1fr));
 }
+/* Card interactivity */
+.card-wrapper{position:relative;transition:transform 0.15s,opacity 0.2s}
+.card-wrapper.dragging{opacity:0.4}
+.card-wrapper.drag-over{outline:2px dashed var(--accent);outline-offset:4px}
+.card-wrapper.pinned .card{border-color:var(--accent);border-width:2px}
+.card-controls{position:absolute;top:8px;right:8px;display:flex;gap:4px;z-index:1}
+.card-controls button{
+  background:var(--surface);border:1px solid var(--border);border-radius:6px;
+  width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;font-size:14px;color:var(--text-muted);opacity:0;transition:opacity 0.15s
+}
+.card-wrapper:hover .card-controls button,.card-wrapper.pinned .card-controls button{opacity:1}
+.card-controls button:hover{color:var(--text);border-color:var(--text-muted)}
+.card-controls button.active{color:var(--accent);border-color:var(--accent)}
+.card-wrapper.collapsed .card-body,.card-wrapper.collapsed .card-empty-cta{display:none}
+.card-body{transition:max-height 0.3s ease;overflow:hidden}
 
 /* Universal card */
 .card{
@@ -1247,6 +1263,169 @@ async function init() {
 }
 
 init();
+
+// ── Card Interactivity ──────────────────────────────────────────
+function _d15GetCardOrder() { try { return JSON.parse(localStorage.getItem('d15_card_order') || '[]'); } catch { return []; } }
+function _d15SaveCardOrder(ids) { localStorage.setItem('d15_card_order', JSON.stringify(ids)); }
+function _d15GetPinned() { try { return JSON.parse(localStorage.getItem('d15_pinned_cards') || '[]'); } catch { return []; } }
+function _d15SavePinned(ids) { localStorage.setItem('d15_pinned_cards', JSON.stringify(ids.slice(0, 3))); }
+function _d15GetCollapsed() { try { return JSON.parse(localStorage.getItem('d15_collapsed_cards') || '[]'); } catch { return []; } }
+function _d15SaveCollapsed(ids) { localStorage.setItem('d15_collapsed_cards', JSON.stringify(ids)); }
+
+function _d15ApplyInteractivity() {
+  const grid = document.querySelector('.card-grid');
+  if (!grid || grid._d15_init) return;
+  grid._d15_init = true;
+
+  // Wrap each card's direct child in a card-wrapper
+  const cards = Array.from(grid.children);
+  cards.forEach((child, i) => {
+    if (child.classList.contains('card-wrapper')) return;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-wrapper';
+    wrapper.setAttribute('draggable', 'true');
+    wrapper._cardIndex = i;
+
+    // Move the card into the wrapper
+    grid.insertBefore(wrapper, child);
+    wrapper.appendChild(child);
+
+    // Add controls
+    const controls = document.createElement('div');
+    controls.className = 'card-controls';
+
+    const pinBtn = document.createElement('button');
+    pinBtn.innerHTML = 'P';
+    pinBtn.title = 'Pin card';
+    pinBtn.setAttribute('aria-label', 'Pin card');
+    pinBtn.onclick = (e) => { e.stopPropagation(); _d15TogglePin(wrapper); };
+
+    const collapseBtn = document.createElement('button');
+    collapseBtn.innerHTML = 'C';
+    collapseBtn.title = 'Collapse/expand';
+    collapseBtn.setAttribute('aria-label', 'Collapse card');
+    collapseBtn.onclick = (e) => { e.stopPropagation(); _d15ToggleCollapse(wrapper); };
+
+    controls.appendChild(pinBtn);
+    controls.appendChild(collapseBtn);
+    wrapper.appendChild(controls);
+
+    // Drag events
+    wrapper.addEventListener('dragstart', (e) => {
+      wrapper.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', wrapper._cardIndex);
+    });
+    wrapper.addEventListener('dragend', () => {
+      wrapper.classList.remove('dragging');
+      document.querySelectorAll('.card-wrapper.drag-over').forEach(el => el.classList.remove('drag-over'));
+      _d15SaveOrderFromDOM();
+    });
+    wrapper.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      if (!wrapper.classList.contains('dragging')) wrapper.classList.add('drag-over');
+    });
+    wrapper.addEventListener('dragleave', () => wrapper.classList.remove('drag-over'));
+    wrapper.addEventListener('drop', (e) => {
+      e.preventDefault();
+      wrapper.classList.remove('drag-over');
+      const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+      const toIndex = wrapper._cardIndex;
+      if (fromIndex === toIndex) return;
+      const allWrappers = Array.from(grid.querySelectorAll('.card-wrapper'));
+      const fromEl = allWrappers[fromIndex];
+      if (fromIndex < toIndex) {
+        wrapper.parentNode.insertBefore(fromEl, wrapper.nextSibling);
+      } else {
+        wrapper.parentNode.insertBefore(fromEl, wrapper);
+      }
+      // Update indices
+      allWrappers.forEach((w, idx) => w._cardIndex = idx);
+      _d15SaveOrderFromDOM();
+    });
+  });
+
+  // Restore saved state
+  _d15RestoreState();
+}
+
+function _d15TogglePin(wrapper) {
+  const pinned = _d15GetPinned();
+  const cardId = _d15GetCardId(wrapper);
+  if (!cardId) return;
+  const idx = pinned.indexOf(cardId);
+  if (idx >= 0) {
+    pinned.splice(idx, 1);
+    wrapper.classList.remove('pinned');
+  } else {
+    if (pinned.length >= 3) return; // max 3 pinned
+    pinned.push(cardId);
+    wrapper.classList.add('pinned');
+    // Move pinned cards to top
+    const grid = wrapper.parentNode;
+    grid.insertBefore(wrapper, grid.firstChild);
+  }
+  _d15SavePinned(pinned);
+  // Re-apply pin button active state
+  const pinBtn = wrapper.querySelector('.card-controls button:first-child');
+  if (pinBtn) pinBtn.classList.toggle('active', pinned.includes(cardId));
+}
+
+function _d15ToggleCollapse(wrapper) {
+  const collapsed = _d15GetCollapsed();
+  const cardId = _d15GetCardId(wrapper);
+  if (!cardId) return;
+  const idx = collapsed.indexOf(cardId);
+  if (idx >= 0) {
+    collapsed.splice(idx, 1);
+    wrapper.classList.remove('collapsed');
+  } else {
+    collapsed.push(cardId);
+    wrapper.classList.add('collapsed');
+  }
+  _d15SaveCollapsed(collapsed);
+}
+
+function _d15GetCardId(wrapper) {
+  // Try to extract card ID from the kicker text or data attribute
+  const kicker = wrapper.querySelector('.card-kicker');
+  if (kicker && kicker.textContent) {
+    return kicker.textContent.split('·')[0].trim().toLowerCase().replace(/\s+/g, '_');
+  }
+  return wrapper._cardIndex + '';
+}
+
+function _d15SaveOrderFromDOM() {
+  const grid = document.querySelector('.card-grid');
+  if (!grid) return;
+  const ids = Array.from(grid.querySelectorAll('.card-wrapper')).map(w => _d15GetCardId(w));
+  _d15SaveCardOrder(ids);
+}
+
+function _d15RestoreState() {
+  const pinned = _d15GetPinned();
+  const collapsed = _d15GetCollapsed();
+  document.querySelectorAll('.card-wrapper').forEach(wrapper => {
+    const cardId = _d15GetCardId(wrapper);
+    if (pinned.includes(cardId)) {
+      wrapper.classList.add('pinned');
+      const pinBtn = wrapper.querySelector('.card-controls button:first-child');
+      if (pinBtn) pinBtn.classList.add('active');
+    }
+    if (collapsed.includes(cardId)) {
+      wrapper.classList.add('collapsed');
+    }
+  });
+}
+
+// Run after React renders
+const _d15Observer = new MutationObserver(() => {
+  const grid = document.querySelector('.card-grid');
+  if (grid && !grid._d15_init) _d15ApplyInteractivity();
+});
+_d15Observer.observe(document.getElementById('app') || document.body, { childList: true, subtree: true });
 </script>
 <script>
 if ('serviceWorker' in navigator) {
