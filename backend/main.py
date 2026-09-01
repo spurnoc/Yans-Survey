@@ -9,7 +9,7 @@ Standalone FastAPI app. Chat-style adaptive survey with SSE streaming.
 """
 from __future__ import annotations
 
-import os, json, time, re, asyncio, logging, csv, io, wave
+import os, json, time, re, asyncio, logging, csv, io, wave, ssl
 import hashlib, hmac, secrets, base64
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -434,9 +434,25 @@ async def init_db():
         reminder_time TEXT DEFAULT '08:00',
         enabled INTEGER DEFAULT 1,
         last_sent_date TEXT DEFAULT '',
+        last_weekly_sent_date TEXT DEFAULT '',
+        timezone TEXT DEFAULT '',
         created_at TEXT DEFAULT (datetime('now'))
     )
     """)
+
+    # Idempotent column additions for already-deployed databases
+    for _col, _default in [
+        ("timezone", ""),
+        ("last_weekly_sent_date", ""),
+    ]:
+        try:
+            await _turso_execute(
+                f"ALTER TABLE reminder_settings ADD COLUMN {_col} TEXT DEFAULT '{_default}'"
+            )
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+            logger.debug("init_db: reminder_settings.%s column already exists: %s", _col, e)
 
     # ── Multi-user businesses ───────────────────────────────────────
     await _turso_execute("""
@@ -722,10 +738,6 @@ _PUBLIC_PATHS = {
     "/api/survey/business-profile",
     "/api/survey/priorities",
     "/api/reminder/settings",
-    "/api/export/survey",
-    "/api/export/checkins",
-    "/api/export/profile",
-    "/api/export/all",
 }
 
 
@@ -739,7 +751,7 @@ def _is_public_path(path: str) -> bool:
     if path.startswith("/api/admin/"):
         return True
     # Public branding endpoint (GET) — frontend fetches on load before auth
-    if path.startswith("/api/branding/") and not path.endswith("/branding"):
+    if path.startswith("/api/branding/"):
         return True
     # i18n translations are public (needed before login)
     if path.startswith("/api/i18n/"):
@@ -1066,6 +1078,7 @@ async def _build_checkin_prompt(session_id: str, conversation: list, checkin_ste
         [{"type": "text", "value": session_id}]
     )
     onboarding_summary = ""
+    conv = []
     if sess_rows and sess_rows[0].get("conversation"):
         conv = json.loads(sess_rows[0]["conversation"])
         answers = [m["content"] for m in conv if m["role"] == "user"]
@@ -1363,7 +1376,7 @@ async def _send_transcript_email(sess: dict):
 def _send_email_sync(msg: MIMEMultipart):
     """Synchronous SMTP send helper (called via asyncio.to_thread)."""
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
         server.login(SMTP_USER, SMTP_PASS)
         server.sendmail(SMTP_USER, [EMAIL_TO], msg.as_string())
 
@@ -1507,36 +1520,41 @@ async def _stream_llm_response(messages: list[dict], model: str, max_tokens: int
                     "Content-Type": "application/json",
                 },
             )
-        async with _ctx as resp:
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
-                    return  # can't return value from async generator
+        try:
+            async with _ctx as resp:
+                    if resp.status_code != 200:
+                        body = await resp.aread()
+                        yield f"data: {json.dumps({'error': body.decode(errors='replace')[:200]})}\n\n"
+                        return  # can't return value from async generator
 
-                got_content = False
-                async for line in resp.aiter_lines():
-                    if not line or not line.startswith("data: "):
-                        continue
-                    if line.strip() == "data: [DONE]":
-                        break
-                    try:
-                        chunk = json.loads(line[6:])
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content")
-                        if content:
-                            got_content = True
-                            yield f"data: {json.dumps({'content': content})}\n\n"
-                    except (json.JSONDecodeError, IndexError):
-                        continue
+                    got_content = False
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        if line.strip() == "data: [DONE]":
+                            break
+                        try:
+                            chunk = json.loads(line[6:])
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                got_content = True
+                                yield f"data: {json.dumps({'content': content})}\n\n"
+                        except (json.JSONDecodeError, IndexError):
+                            continue
 
-                # Edge case: reasoning model returned only reasoning, no content
-                if not got_content:
-                    resp2 = await _spur_chat_completion(messages, model, max_tokens=max_tokens, timeout=90.0)
-                    if resp2.status_code == 200:
-                        fallback_text = _extract_llm_content(resp2.json())
-                        if fallback_text:
-                            for i in range(0, len(fallback_text), 3):
-                                yield f"data: {json.dumps({'content': fallback_text[i:i+3]})}\n\n"
+                    # Edge case: reasoning model returned only reasoning, no content
+                    if not got_content:
+                        resp2 = await _spur_chat_completion(messages, model, max_tokens=max_tokens, timeout=90.0)
+                        if resp2.status_code == 200:
+                            fallback_text = _extract_llm_content(resp2.json())
+                            if fallback_text:
+                                for i in range(0, len(fallback_text), 3):
+                                    yield f"data: {json.dumps({'content': fallback_text[i:i+3]})}\n\n"
+        finally:
+            # Ensure the non-pooled client is always closed (Fix: streaming resource leak)
+            if not _use_pooled_clients and client is not None:
+                await client.aclose()
 
     except Exception as e:
         yield f"data: {json.dumps({'error': str(e)[:200]})}\n\n"
@@ -2180,6 +2198,7 @@ class ReminderSettingsRequest(BaseModel):
     phone: str = ""
     reminder_time: str = "08:00"
     enabled: bool = True
+    timezone: str = ""
 
     @field_validator("email")
     @classmethod
@@ -2203,6 +2222,17 @@ class ReminderSettingsRequest(BaseModel):
             raise ValueError("reminder_time must be a valid time")
         return v
 
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            return v
+        # Accept UTC offset strings like '-04:00' or '+05:30'
+        if not re.match(r"^[+-]\d{2}:\d{2}$", v):
+            raise ValueError("timezone must be a UTC offset like '-04:00' or '+05:30'")
+        return v
+
 
 async def _get_reminder_settings(user_id: str) -> dict | None:
     """Load reminder settings for a user. Returns dict or None."""
@@ -2218,11 +2248,11 @@ async def _get_reminder_settings(user_id: str) -> dict | None:
     return None
 
 
-async def _save_reminder_settings(user_id: str, email: str, phone: str, reminder_time: str, enabled: bool):
+async def _save_reminder_settings(user_id: str, email: str, phone: str, reminder_time: str, enabled: bool, tz: str = ""):
     """Insert or update reminder settings for a user."""
     await _turso_execute(
-        """INSERT OR REPLACE INTO reminder_settings (user_id, email, phone, reminder_time, enabled, last_sent_date, created_at)
-           VALUES (?, ?, ?, ?, ?, COALESCE((SELECT last_sent_date FROM reminder_settings WHERE user_id=?), ''), COALESCE((SELECT created_at FROM reminder_settings WHERE user_id=?), datetime('now')))""",
+        """INSERT OR REPLACE INTO reminder_settings (user_id, email, phone, reminder_time, enabled, last_sent_date, last_weekly_sent_date, timezone, created_at)
+           VALUES (?, ?, ?, ?, ?, COALESCE((SELECT last_sent_date FROM reminder_settings WHERE user_id=?), ''), COALESCE((SELECT last_weekly_sent_date FROM reminder_settings WHERE user_id=?), ''), ?, COALESCE((SELECT created_at FROM reminder_settings WHERE user_id=?), datetime('now')))""",
         [
             {"type": "text", "value": user_id},
             {"type": "text", "value": email},
@@ -2230,6 +2260,8 @@ async def _save_reminder_settings(user_id: str, email: str, phone: str, reminder
             {"type": "text", "value": reminder_time},
             {"type": "integer", "value": "1" if enabled else "0"},
             {"type": "text", "value": user_id},
+            {"type": "text", "value": user_id},
+            {"type": "text", "value": tz},
             {"type": "text", "value": user_id},
         ]
     )
@@ -2272,7 +2304,7 @@ async def _send_checkin_reminder(user_id: str, email: str):
 def _send_email_to_sync(msg: MIMEMultipart, to_email: str):
     """Synchronous SMTP send helper for reminder emails (called via asyncio.to_thread)."""
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-        server.starttls()
+        server.starttls(context=ssl.create_default_context())
         server.login(SMTP_USER, SMTP_PASS)
         server.sendmail(SMTP_USER, [to_email], msg.as_string())
 
@@ -2399,80 +2431,128 @@ async def _send_weekly_summary(user_id: str, email: str):
         logger.debug("_send_weekly_summary failed for user %s: %s", user_id, e)
 
 
+def _apply_tz_offset(dt_utc: datetime, tz_str: str) -> datetime:
+    """Apply a UTC offset string (e.g. '-04:00', '+05:30') to a UTC datetime.
+
+    Returns an aware datetime in the user's timezone. Raises ValueError on
+    malformed input.
+    """
+    tz_str = tz_str.strip()
+    if not tz_str:
+        raise ValueError("empty timezone string")
+    sign = 1
+    if tz_str.startswith("+"):
+        sign = 1
+        tz_str = tz_str[1:]
+    elif tz_str.startswith("-"):
+        sign = -1
+        tz_str = tz_str[1:]
+    parts = tz_str.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"invalid timezone offset: {tz_str}")
+    hours = int(parts[0])
+    minutes = int(parts[1])
+    offset = timedelta(hours=sign * hours, minutes=sign * minutes)
+    return dt_utc.astimezone(timezone(offset))
+
+
 async def _send_reminder_loop():
     """Background loop: every 60s, check if any user's reminder_time matches
     the current time (HH:MM) and send a reminder email. Uses last_sent_date
     to avoid double-sending within the same day.
 
     On Sundays at 18:00 (6pm), sends weekly summaries instead of daily reminders.
+    Uses last_weekly_sent_date to avoid double-sending the weekly summary.
+
+    Timezone: each user's reminder_time is interpreted in their stored timezone
+    (as a UTC offset string like '-04:00'). If no timezone is set, falls back
+    to server local time.
     """
     logger.info("Daily check-in reminder loop started")
     while True:
         try:
-            now = datetime.now(timezone.utc).astimezone()
-            current_hhmm = now.strftime("%H:%M")
-            today = now.strftime("%Y-%m-%d")
-            weekday = now.weekday()  # 0=Monday, 6=Sunday
+            now_utc = datetime.now(timezone.utc)
 
-            # Sunday at 6pm: send weekly summaries to all users with reminders enabled
-            is_sunday_6pm = weekday == 6 and current_hhmm == "18:00"
-            weekly_sent_key = f"{today}_weekly"
-
-            if is_sunday_6pm:
-                # Fetch all enabled reminder settings for weekly summary
-                weekly_rows = await _turso_query(
-                    "SELECT user_id, email FROM reminder_settings WHERE enabled=1 AND last_sent_date != ?",
-                    [{"type": "text", "value": weekly_sent_key}]
-                )
-                for row in weekly_rows:
-                    user_id = row.get("user_id")
-                    email = row.get("email") or ""
-                    if not email:
-                        continue
+            # ── Weekly summary (Sunday 18:00 in each user's timezone) ──
+            # Query all enabled reminders; we filter per-user below.
+            weekly_rows = await _turso_query(
+                "SELECT user_id, email, timezone, last_weekly_sent_date FROM reminder_settings WHERE enabled=1"
+            )
+            for row in weekly_rows:
+                user_id = row.get("user_id")
+                email = row.get("email") or ""
+                if not email:
+                    continue
+                tz_str = row.get("timezone") or ""
+                # Determine the user's "now" in their timezone
+                if tz_str:
                     try:
-                        await _send_weekly_summary(user_id, email)
-                        # Mark as sent with weekly key to avoid double-sending
-                        await _turso_execute(
-                            "UPDATE reminder_settings SET last_sent_date=? WHERE user_id=?",
-                            [
-                                {"type": "text", "value": weekly_sent_key},
-                                {"type": "text", "value": user_id},
-                            ]
-                        )
-                    except Exception as e:
-                        logger.debug("Weekly summary loop: failed to send to %s: %s", email, e)
-                # Still fall through to check regular reminders (some users may have 18:00 set)
-            else:
-                # Skip daily reminders on Sunday 6pm (weekly summaries take precedence)
-                # On all other days/times, send regular daily reminders
+                        user_now = _apply_tz_offset(now_utc, tz_str)
+                    except Exception:
+                        user_now = now_utc.astimezone()
+                else:
+                    user_now = now_utc.astimezone()
 
-                # Query all enabled reminder settings where reminder_time matches current HH:MM
-                rows = await _turso_query(
-                    "SELECT user_id, email, phone, reminder_time, last_sent_date FROM reminder_settings WHERE enabled=1 AND reminder_time=?",
-                    [{"type": "text", "value": current_hhmm}]
-                )
+                # Sunday = weekday 6; check if it's 18:00 in the user's timezone
+                if user_now.weekday() != 6 or user_now.strftime("%H:%M") != "18:00":
+                    continue
 
-                for row in rows:
-                    # Skip if already sent today
-                    if row.get("last_sent_date") == today:
-                        continue
-                    user_id = row.get("user_id")
-                    email = row.get("email") or ""
-                    if not email:
-                        continue
-                    # Send reminder (fire-and-forget, best-effort)
+                today = user_now.strftime("%Y-%m-%d")
+                last_weekly = row.get("last_weekly_sent_date") or ""
+                if last_weekly == today:
+                    continue  # already sent this week
+
+                try:
+                    await _send_weekly_summary(user_id, email)
+                    await _turso_execute(
+                        "UPDATE reminder_settings SET last_weekly_sent_date=? WHERE user_id=?",
+                        [
+                            {"type": "text", "value": today},
+                            {"type": "text", "value": user_id},
+                        ]
+                    )
+                except Exception as e:
+                    logger.debug("Weekly summary loop: failed to send to %s: %s", email, e)
+
+            # ── Daily reminders ──
+            # Query all enabled reminders; filter by per-user timezone.
+            rows = await _turso_query(
+                "SELECT user_id, email, phone, reminder_time, last_sent_date, timezone FROM reminder_settings WHERE enabled=1"
+            )
+            for row in rows:
+                tz_str = row.get("timezone") or ""
+                if tz_str:
                     try:
-                        await _send_checkin_reminder(user_id, email)
-                        # Mark as sent for today
-                        await _turso_execute(
-                            "UPDATE reminder_settings SET last_sent_date=? WHERE user_id=?",
-                            [
-                                {"type": "text", "value": today},
-                                {"type": "text", "value": user_id},
-                            ]
-                        )
-                    except Exception as e:
-                        logger.debug("Reminder loop: failed to send to %s: %s", email, e)
+                        user_now = _apply_tz_offset(now_utc, tz_str)
+                    except Exception:
+                        user_now = now_utc.astimezone()
+                else:
+                    user_now = now_utc.astimezone()
+
+                current_hhmm = user_now.strftime("%H:%M")
+                today = user_now.strftime("%Y-%m-%d")
+
+                if row.get("reminder_time") != current_hhmm:
+                    continue
+                if row.get("last_sent_date") == today:
+                    continue
+
+                user_id = row.get("user_id")
+                email = row.get("email") or ""
+                if not email:
+                    continue
+
+                try:
+                    await _send_checkin_reminder(user_id, email)
+                    await _turso_execute(
+                        "UPDATE reminder_settings SET last_sent_date=? WHERE user_id=?",
+                        [
+                            {"type": "text", "value": today},
+                            {"type": "text", "value": user_id},
+                        ]
+                    )
+                except Exception as e:
+                    logger.debug("Reminder loop: failed to send to %s: %s", email, e)
 
         except Exception as e:
             logger.debug("_send_reminder_loop iteration error: %s", e)
@@ -2489,6 +2569,7 @@ async def save_reminder_settings(req: ReminderSettingsRequest, user: dict = Depe
         req.phone,
         req.reminder_time,
         req.enabled,
+        req.timezone,
     )
     return {
         "status": "ok",
@@ -2497,6 +2578,7 @@ async def save_reminder_settings(req: ReminderSettingsRequest, user: dict = Depe
             "phone": req.phone,
             "reminder_time": req.reminder_time,
             "enabled": req.enabled,
+            "timezone": req.timezone,
         },
     }
 
@@ -2511,12 +2593,14 @@ async def get_reminder_settings(user: dict = Depends(_auth_dependency)):
             "phone": "",
             "reminder_time": "08:00",
             "enabled": False,
+            "timezone": "",
         }
     return {
         "email": settings.get("email") or "",
         "phone": settings.get("phone") or "",
         "reminder_time": settings.get("reminder_time") or "08:00",
         "enabled": bool(settings.get("enabled")),
+        "timezone": settings.get("timezone") or "",
     }
 
 
@@ -2736,21 +2820,20 @@ async def admin_stats(authorization: str | None = Header(None)):
     checkin_rows = await _turso_query("SELECT COUNT(*) as cnt FROM daily_checkins")
     total_checkins = int(checkin_rows[0]["cnt"]) if checkin_rows else 0
 
-    # Recent signups (last 10 users) with business type
+    # Recent signups (last 10 users) with business type — single JOIN query
     recent_users = await _turso_query(
-        "SELECT user_id, email, created_at FROM users ORDER BY created_at DESC LIMIT 10"
+        """SELECT u.user_id, u.email, u.created_at, ss.conversation
+           FROM users u
+           LEFT JOIN survey_sessions ss ON ss.user_id = u.user_id
+           ORDER BY u.created_at DESC LIMIT 10"""
     )
     recent_signups = []
     for u in recent_users:
         biz_type = "—"
-        # Find the user's survey session to detect business type
-        sess_rows = await _turso_query(
-            "SELECT conversation FROM survey_sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
-            [{"type": "text", "value": u["user_id"]}],
-        )
-        if sess_rows and sess_rows[0].get("conversation"):
+        conv_raw = u.get("conversation") or "[]"
+        if conv_raw:
             try:
-                conv = json.loads(sess_rows[0]["conversation"])
+                conv = json.loads(conv_raw)
                 biz_type = _detect_business_type(conv)
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -2778,18 +2861,18 @@ async def admin_users(authorization: str | None = Header(None)):
         raise HTTPException(status_code=404)
 
     users = await _turso_query(
-        "SELECT user_id, email, created_at FROM users ORDER BY created_at DESC"
+        """SELECT u.user_id, u.email, u.created_at, ss.conversation
+           FROM users u
+           LEFT JOIN survey_sessions ss ON ss.user_id = u.user_id
+           ORDER BY u.created_at DESC LIMIT 50"""
     )
     result = []
     for u in users:
         biz_type = None
-        sess_rows = await _turso_query(
-            "SELECT conversation FROM survey_sessions WHERE user_id=? ORDER BY updated_at DESC LIMIT 1",
-            [{"type": "text", "value": u["user_id"]}],
-        )
-        if sess_rows and sess_rows[0].get("conversation"):
+        conv_raw = u.get("conversation") or "[]"
+        if conv_raw:
             try:
-                conv = json.loads(sess_rows[0]["conversation"])
+                conv = json.loads(conv_raw)
                 biz_type = _detect_business_type(conv)
             except (json.JSONDecodeError, TypeError):
                 pass
@@ -2828,13 +2911,13 @@ async def admin_businesses(authorization: str | None = Header(None)):
         if bp and bp.get("business_name"):
             biz_name = bp["business_name"]
 
-        # Member count: number of sessions linked to the same user
+        # Member count: count rows in business_members for the linked business_id
         member_count = 0
-        user_id = s.get("user_id")
-        if user_id:
+        biz_id = s.get("business_id")
+        if biz_id:
             count_rows = await _turso_query(
-                "SELECT COUNT(*) as cnt FROM survey_sessions WHERE user_id=?",
-                [{"type": "text", "value": user_id}],
+                "SELECT COUNT(*) as cnt FROM business_members WHERE business_id=?",
+                [{"type": "integer", "value": str(biz_id)}],
             )
             member_count = int(count_rows[0]["cnt"]) if count_rows else 0
 
@@ -2941,11 +3024,7 @@ class AcceptInviteRequest(BaseModel):
 @app.post("/api/business/create")
 async def create_business(req: CreateBusinessRequest, user: dict = Depends(_auth_dependency)):
     """Create a new business and link the current user as owner."""
-    business_id_val = "b-" + secrets.token_hex(8)
-    # Insert the business row. SQLite autoincrement INTEGER PK is used, but we
-    # store a human-readable business_id-like token is NOT needed — the PK
-    # autoincrement column serves as the business_id. We insert and then fetch
-    # the rowid.
+    # Insert the business row. SQLite autoincrement INTEGER PK is used.
     await _turso_execute(
         """INSERT INTO businesses (name, type) VALUES (?, ?)""",
         [
@@ -2953,10 +3032,11 @@ async def create_business(req: CreateBusinessRequest, user: dict = Depends(_auth
             {"type": "text", "value": req.type},
         ]
     )
-    # Fetch the newly created business by name + created_at (most recent match)
+    # Get the newly inserted business_id via last_insert_rowid() — avoids
+    # the race condition of SELECT by name (multiple businesses could share
+    # the same name, and concurrent inserts would be ambiguous).
     rows = await _turso_query(
-        "SELECT business_id, name, type, created_at FROM businesses WHERE name=? ORDER BY created_at DESC LIMIT 1",
-        [{"type": "text", "value": req.name}]
+        "SELECT business_id, name, type, created_at FROM businesses WHERE business_id = last_insert_rowid()"
     )
     if not rows:
         raise HTTPException(status_code=500, detail="Failed to create business.")
@@ -3274,21 +3354,40 @@ class BrandingRequest(BaseModel):
         return v
 
 
-@app.get("/api/branding/{business_id}")
-async def get_branding(business_id: int):
-    """Get white-label branding config for a business. Public endpoint."""
-    rows = await _turso_query(
-        "SELECT logo_url, primary_color, business_name, custom_welcome FROM branding WHERE business_id=?",
-        [{"type": "integer", "value": str(business_id)}]
+@app.get("/api/branding/{session_id}")
+async def get_branding(session_id: str):
+    """Get white-label branding config for a session. Public endpoint.
+
+    The frontend calls /api/branding/${sessionId} where sessionId is a string
+    like 's-xxx'. We look up the business_id via the session, then fetch
+    branding by that business_id.
+    """
+    # Validate session_id
+    if not session_id or not re.match(r"^[a-zA-Z0-9_-]+$", session_id):
+        raise HTTPException(status_code=422, detail="Invalid session_id")
+
+    # Look up the business_id linked to this survey session
+    sess_rows = await _turso_query(
+        "SELECT business_id FROM survey_sessions WHERE session_id=?",
+        [{"type": "text", "value": session_id}]
     )
-    if rows:
-        r = rows[0]
-        return {
-            "logo_url": r.get("logo_url") or "",
-            "primary_color": r.get("primary_color") or "",
-            "business_name": r.get("business_name") or "",
-            "custom_welcome": r.get("custom_welcome") or "",
-        }
+    business_id = None
+    if sess_rows and sess_rows[0].get("business_id"):
+        business_id = sess_rows[0]["business_id"]
+
+    if business_id is not None:
+        rows = await _turso_query(
+            "SELECT logo_url, primary_color, business_name, custom_welcome FROM branding WHERE business_id=?",
+            [{"type": "integer", "value": str(business_id)}]
+        )
+        if rows:
+            r = rows[0]
+            return {
+                "logo_url": r.get("logo_url") or "",
+                "primary_color": r.get("primary_color") or "",
+                "business_name": r.get("business_name") or "",
+                "custom_welcome": r.get("custom_welcome") or "",
+            }
     # No branding configured — return defaults
     return {
         "logo_url": "",

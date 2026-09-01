@@ -861,11 +861,11 @@ function applyBranding() {
 
 // Helper: convert hex color to rgba string
 function hexToRgba(hex, alpha) {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!m) return null;
-  const r = parseInt(m[1], 16);
-  const g = parseInt(m[2], 16);
-  const b = parseInt(m[3], 16);
+  const m = hex.replace('#', '');
+  const full = m.length === 3 ? m.split('').map(c => c + c).join('') : m;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
@@ -1421,7 +1421,24 @@ function showThinking() {
   // Replace input area with a disabled-looking placeholder
   // so the chat bar is empty but visible while AI is thinking
   const area = document.getElementById('input-area');
-  area.innerHTML = `<div class="text-wrap"><div class="text-input" style="opacity:0.4;cursor:default">${t('thinking')}</div><button class="send-btn" disabled>→</button></div>`;
+  area.innerHTML = '';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'text-wrap';
+
+  const placeholder = document.createElement('div');
+  placeholder.className = 'text-input';
+  placeholder.setAttribute('style', 'opacity:0.4;cursor:default');
+  placeholder.textContent = t('thinking');
+  wrap.appendChild(placeholder);
+
+  const sendBtn = document.createElement('button');
+  sendBtn.className = 'send-btn';
+  sendBtn.disabled = true;
+  sendBtn.textContent = '→';
+  wrap.appendChild(sendBtn);
+
+  area.appendChild(wrap);
 }
 
 function showComplete() {

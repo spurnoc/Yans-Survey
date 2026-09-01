@@ -552,11 +552,13 @@ async function fetchData(sessionId) {
   const controller = new AbortController();
   setTimeout(() => controller.abort(), 30000);
   const signal = controller.signal;
+  const token = localStorage.getItem('auth_token');
+  const headers = token ? { Authorization: 'Bearer ' + token } : {};
   const [transcriptResp, profileResp, checkinStatusResp, businessProfileResp] = await Promise.all([
-    fetch(`${API}/transcript?session_id=${sessionId}`, { signal }).then(r => r.json()),
-    fetch(`${API}/profile/${sessionId}`, { signal }).then(r => r.ok ? r.text() : ''),
-    fetch(`${API}/checkin/status?session_id=${sessionId}`, { signal }).then(r => r.json()),
-    fetch(`${API}/business-profile/${sessionId}`, { signal }).then(r => r.ok ? r.json() : null).catch(() => null),
+    fetch(`${API}/transcript?session_id=${sessionId}`, { signal, headers }).then(r => r.json()),
+    fetch(`${API}/profile/${sessionId}`, { signal, headers }).then(r => r.ok ? r.text() : ''),
+    fetch(`${API}/checkin/status?session_id=${sessionId}`, { signal, headers }).then(r => r.json()),
+    fetch(`${API}/business-profile/${sessionId}`, { signal, headers }).then(r => r.ok ? r.json() : null).catch(() => null),
   ]);
   return {
     transcript: transcriptResp,
