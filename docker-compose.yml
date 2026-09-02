@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  survey-dev:
+    build:
+      context: ./survey-dev
+      dockerfile: Dockerfile
+    container_name: deploy-survey-dev-1
+    env_file:
+      - ./survey-dev/.env
+    ports:
+      - "8040:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
