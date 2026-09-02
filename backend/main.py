@@ -1392,7 +1392,8 @@ async def _build_system_prompt(sess: dict, answered_q_id: int, answered_q_text: 
     if not target_q:
         return (
             "You are conducting a conversational survey with a small business owner. "
-            "The survey is now complete. Thank them naturally and say something genuine about what they shared."
+            "The survey is now complete. Thank them naturally and say something genuine about what they shared. "
+            "Do NOT ask any questions. Do NOT mention a 'next question'. Just wrap up in 1-2 sentences."
         )
 
     target_q_text = target_q["text"]

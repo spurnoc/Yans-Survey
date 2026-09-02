@@ -1660,10 +1660,13 @@ async function submitAnswer(answer) {
             pendingChoices = data.choices;
           }
           if (data.done) {
+            // Hide input area immediately — survey is complete
+            const inputArea = document.getElementById('input-area');
+            if (inputArea) inputArea.innerHTML = '';
             if (currentMode === 'checkin') {
-              setTimeout(() => showCheckinComplete(), 1500);
+              setTimeout(() => showCheckinComplete(), 2500);
             } else {
-              setTimeout(() => showComplete(), 1500);
+              setTimeout(() => showComplete(), 2500);
             }
           }
         } catch(e) { console.error('SSE parse error:', e, dataStr); }
