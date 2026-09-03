@@ -756,6 +756,15 @@ def _is_public_path(path: str) -> bool:
     # i18n translations are public (needed before login)
     if path.startswith("/api/i18n/"):
         return True
+    # Survey sub-resource endpoints (with session_id path param)
+    if path.startswith("/api/survey/business-profile/"):
+        return True
+    if path.startswith("/api/survey/profile/"):
+        return True
+    if path.startswith("/api/survey/priorities/"):
+        return True
+    if path.startswith("/api/survey/transcript/"):
+        return True
     # /api/survey/reset is auth-required when it's a POST, but we allow
     # it as a public path only for GET (which doesn't exist). POST reset
     # will be handled by the dependency check below.
