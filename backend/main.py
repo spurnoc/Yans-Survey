@@ -95,7 +95,7 @@ TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "")
 SMTP_HOST = os.getenv("SMTP_HOST", "mail.spuric.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
-SMTP_PASS = os.getenv("SMTP_PASS", "")
+SMTP_PASS = os.getenv("SMTP_PASS", "") or os.getenv("SMTP_PASSWORD", "")
 EMAIL_TO = os.getenv("EMAIL_TO", "")
 
 # Voice transcription settings
@@ -1383,11 +1383,17 @@ async def _send_transcript_email(sess: dict):
 
 
 def _send_email_sync(msg: MIMEMultipart):
-    """Synchronous SMTP send helper (called via asyncio.to_thread)."""
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-        server.starttls(context=ssl.create_default_context())
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(SMTP_USER, [EMAIL_TO], msg.as_string())
+    """Synchronous SMTP send helper (called via asyncio.to_thread).
+    Mirrors the proven Civic Signals email_utils.send_email pattern."""
+    s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+    try:
+        s.ehlo()
+        s.starttls()
+        s.ehlo()
+        s.login(SMTP_USER, SMTP_PASS)
+        s.sendmail(SMTP_USER, [EMAIL_TO], msg.as_string())
+    finally:
+        s.quit()
 
 
 # ── System prompt builder ────────────────────────────────────────
@@ -2312,11 +2318,17 @@ async def _send_checkin_reminder(user_id: str, email: str):
 
 
 def _send_email_to_sync(msg: MIMEMultipart, to_email: str):
-    """Synchronous SMTP send helper for reminder emails (called via asyncio.to_thread)."""
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
-        server.starttls(context=ssl.create_default_context())
-        server.login(SMTP_USER, SMTP_PASS)
-        server.sendmail(SMTP_USER, [to_email], msg.as_string())
+    """Synchronous SMTP send helper for reminder emails (called via asyncio.to_thread).
+    Mirrors the proven Civic Signals email_utils.send_email pattern."""
+    s = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+    try:
+        s.ehlo()
+        s.starttls()
+        s.ehlo()
+        s.login(SMTP_USER, SMTP_PASS)
+        s.sendmail(SMTP_USER, [to_email], msg.as_string())
+    finally:
+        s.quit()
 
 
 async def _send_weekly_summary(user_id: str, email: str):
