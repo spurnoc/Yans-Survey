@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#0a0a0a">
+<link rel="icon" type="image/png" href="/assets/spur-favicon.png">
+<link rel="apple-touch-icon" href="/assets/spur-favicon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Daily 15">
@@ -70,10 +72,11 @@ textarea{resize:none}
 .header-brand{display:flex;align-items:center;gap:10px}
 .brand-mark{
   width:32px;height:32px;border-radius:8px;
-  background:var(--warm-dark);color:var(--cream-bg);
+  background:var(--warm-dark);
   display:flex;align-items:center;justify-content:center;
-  font-family:'Instrument Serif',serif;font-size:16px;font-style:italic;
+  overflow:hidden;
 }
+.brand-mark img{width:100%;height:100%;object-fit:contain}
 .header-title{
   font-family:'Instrument Serif',serif;font-size:19px;
   letter-spacing:-0.3px;line-height:1.2;
@@ -299,7 +302,7 @@ textarea{resize:none}
   .header-title{font-size:17px}
   .mode-pill{font-size:9px;padding:2px 8px}
   .header-brand{gap:8px}
-  .brand-mark{width:28px;height:28px;font-size:14px}
+  .brand-mark{width:28px;height:28px}
 }
 @media(max-width:375px){
   .header-title{font-size:15px}
@@ -331,7 +334,7 @@ textarea{resize:none}
   display:flex;align-items:center;gap:10px;
   margin-bottom:28px;justify-content:center;
 }
-.auth-brand .brand-mark{width:36px;height:36px;font-size:18px}
+.auth-brand .brand-mark{width:48px;height:48px}
 .auth-title{
   font-family:'Instrument Serif',serif;font-size:22px;
   text-align:center;margin-bottom:6px;letter-spacing:-0.3px;
@@ -549,7 +552,7 @@ textarea{resize:none}
 <div class="auth-overlay" id="auth-overlay" style="display:flex">
   <div class="auth-card">
     <div class="auth-brand">
-      <div class="brand-mark">B</div>
+      <div class="brand-mark"><img src="/assets/spur-brandmark-white.svg" alt="SPUR"></div>
     </div>
     <div class="auth-title" id="auth-title">Welcome back</div>
     <div class="auth-sub" id="auth-sub">Log in to continue your survey</div>
@@ -573,7 +576,7 @@ textarea{resize:none}
 <div id="app">
   <div class="header">
     <div class="header-brand">
-      <div class="brand-mark">B</div>
+      <div class="brand-mark"><img src="/assets/spur-brandmark-white.svg" alt="SPUR"></div>
       <div>
         <div class="header-title">Daily 15</div>
         <div class="header-sub" id="header-sub">Loading…</div>
@@ -852,7 +855,6 @@ function applyBranding() {
       brandMark.innerHTML = '';
       const img = document.createElement('img');
       img.src = branding.logo_url;
-      img.className = 'brand-logo';
       img.alt = branding.business_name || 'Brand';
       brandMark.appendChild(img);
     }
